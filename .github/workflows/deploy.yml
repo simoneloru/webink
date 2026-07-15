@@ -1,0 +1,79 @@
+name: Build CrossInk Wasm & Deploy Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build python3
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+          actions-cache-folder: emsdk-cache
+
+      - name: Verify emcc
+        run: emcc -v
+
+      - name: Generate icons
+        run: python3 scripts/gen_icons.py
+
+      - name: Patch simulator for web APIs
+        run: ./scripts/patch_simulator.sh
+
+      - name: Generate CrossInk i18n / web assets
+        working-directory: vendor/CrossInk
+        run: |
+          python3 scripts/gen_i18n.py
+          python3 scripts/build_web.py || true
+
+      - name: Configure & build
+        run: |
+          emcmake cmake -S wasm -B wasm/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build wasm/build --parallel
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp -R www/* _site/
+          test -f _site/crossink.js
+          test -f _site/crossink.wasm
+          touch _site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

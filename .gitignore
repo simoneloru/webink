@@ -1,0 +1,27 @@
+# Build
+wasm/build/
+_site/
+*.o
+*.a
+
+# Emscripten outputs (generated into www/)
+www/crossink.js
+www/crossink.wasm
+www/crossink.worker.js
+www/crossink.data
+
+# Local
+.DS_Store
+.emscripten*
+compile_commands.json
+.cache/
+node_modules/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Local SD / test books
+fs_/
+*.epub

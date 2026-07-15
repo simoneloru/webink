@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#e8e4d9" />
+  <meta name="description" content="CrossInk e-reader in the browser (client-side only)" />
+  <!-- Required for SharedArrayBuffer when using pthread Wasm builds -->
+  <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin" />
+  <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <title>CrossInk (Web)</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #121212;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      min-height: 100dvh;
+    }
+    header {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+      padding: 0.55rem 0.75rem;
+      background: #0c0c0c;
+      border-bottom: 1px solid #2a2a2a;
+    }
+    header strong { letter-spacing: 0.02em; }
+    header button, header label.btn {
+      background: #222;
+      color: #eee;
+      border: 1px solid #3a3a3a;
+      border-radius: 8px;
+      padding: 0.4rem 0.7rem;
+      cursor: pointer;
+      font-size: 0.88rem;
+    }
+    header button:hover, header label.btn:hover { background: #2c2c2c; }
+    header button:disabled { opacity: 0.45; cursor: not-allowed; }
+    #status { opacity: 0.85; font-size: 0.82rem; margin-left: auto; max-width: 45ch; text-align: right; }
+    #wrap {
+      flex: 1;
+      display: grid;
+      place-items: center;
+      padding: 0.5rem;
+      min-height: 0;
+    }
+    #canvas {
+      background: #e8e4d9;
+      max-width: 100%;
+      max-height: calc(100dvh - 52px);
+      width: auto;
+      height: auto;
+      image-rendering: pixelated;
+      touch-action: none;
+      border-radius: 4px;
+      box-shadow: 0 10px 40px #000a;
+      outline: none;
+    }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      background: #000c;
+      z-index: 20;
+      padding: 1.5rem;
+      text-align: center;
+    }
+    #overlay.hidden { display: none; }
+    #overlay p { max-width: 36ch; line-height: 1.45; }
+    .hint {
+      font-size: 0.75rem;
+      opacity: 0.65;
+      width: 100%;
+      padding: 0 0.75rem 0.4rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>CrossInk</strong>
+    <span style="opacity:.6;font-size:.8rem">web</span>
+    <label class="btn">
+      Open EPUB
+      <input id="epub" type="file" accept=".epub,application/epub+zip" hidden />
+    </label>
+    <button id="sync" type="button" title="Write virtual SD to IndexedDB">Save library</button>
+    <button id="install" type="button" hidden>Install</button>
+    <span id="status">Loading…</span>
+  </header>
+  <p class="hint">Books stay on this device only (IndexedDB). Keys: arrows · Enter · Esc · P</p>
+
+  <div id="wrap">
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
+  </div>
+
+  <div id="overlay"><p id="overlay-msg">Loading CrossInk…</p></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

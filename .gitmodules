@@ -1,0 +1,6 @@
+[submodule "vendor/CrossInk"]
+	path = vendor/CrossInk
+	url = https://github.com/uxjulia/CrossInk.git
+[submodule "vendor/crosspoint-simulator"]
+	path = vendor/crosspoint-simulator
+	url = https://github.com/uxjulia/crosspoint-simulator.git
