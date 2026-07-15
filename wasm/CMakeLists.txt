@@ -180,9 +180,16 @@ target_compile_definitions(crossink PRIVATE
   DISABLE_FS_H_WARNING=1
   DESTRUCTOR_CLOSES_FILE=1
   CROSSPOINT_FIRMWARE_VARIANT=\"web\"
-  CROSSINK_VERSION=\"web-0.1.0\"
   CROSSINK_BUILD_ENV=\"web\"
   CROSSINK_FIRMWARE_VARIANT=\"web\"
+)
+
+# Version string: -DWEBINK_VERSION=v0.1.0 from CI tags, else default
+if(NOT DEFINED WEBINK_VERSION OR WEBINK_VERSION STREQUAL "")
+  set(WEBINK_VERSION "web-0.1.0")
+endif()
+target_compile_definitions(crossink PRIVATE
+  CROSSINK_VERSION=\"${WEBINK_VERSION}\"
   # Omit heaviest font tiers to keep wasm smaller (tiny-like)
   OMIT_TEENSY_FONT=1
   OMIT_ITTY_BITTY_FONT=1

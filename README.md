@@ -157,9 +157,17 @@ scripts/                         # build, serve, patch helpers
 
 ### Deploy
 
-Push to `main`. The workflow builds with Emscripten and deploys the static site.
+GitHub Actions builds with Emscripten and deploys to Pages when:
+
+| Trigger | When |
+|---------|------|
+| Tag `v*` | e.g. `git tag v0.1.0 && git push origin v0.1.0` (release) |
+| Push to `main` | continuous site updates |
+| **workflow_dispatch** | manual run from the Actions tab |
 
 Repo setting: **Pages → Source: GitHub Actions**.
+
+Live site: **https://simoneloru.github.io/webink/**
 
 ---
 

@@ -1,8 +1,13 @@
 name: Build CrossInk Wasm & Deploy Pages
 
+# Deploy on:
+#   - version tags (v0.1.0, v1.2.3, …)  ← release path
+#   - pushes to main                     ← continuous site updates
+#   - manual run from Actions UI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -19,10 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
-          # freeink-sdk nests lucide; recursive + full history not required
           fetch-depth: 1
 
       - name: Install system packages
@@ -33,7 +37,6 @@ jobs:
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          # Match a recent toolchain; local bring-up used 6.x
           version: 4.0.6
           actions-cache-folder: emsdk-cache
 
@@ -43,6 +46,16 @@ jobs:
           which emcmake
           cmake --version
           ninja --version
+
+      - name: Resolve build version label
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "label=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "label=web-0.1.0-dev" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Building as: $(cat "$GITHUB_OUTPUT" | sed -n 's/label=//p')"
 
       - name: Generate icons
         run: python3 scripts/gen_icons.py
@@ -60,9 +73,13 @@ jobs:
           test -f lib/I18n/I18nKeys.h
 
       - name: Configure & build
+        env:
+          WEBINK_VERSION: ${{ steps.ver.outputs.label }}
         run: |
           set -euo pipefail
-          emcmake cmake -S wasm -B wasm/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          emcmake cmake -S wasm -B wasm/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWEBINK_VERSION="${WEBINK_VERSION}"
           cmake --build wasm/build --parallel 2>&1 | tee build.log
           test -f www/crossink.js
           test -f www/crossink.wasm
@@ -72,15 +89,20 @@ jobs:
         run: |
           mkdir -p _site
           cp -R www/* _site/
-          # Drop local-only junk if any
           rm -f _site/.DS_Store
           test -f _site/crossink.js
           test -f _site/crossink.wasm
           test -f _site/index.html
+          # Tiny stamp for debugging which ref is live
+          {
+            echo "ref=${GITHUB_REF}"
+            echo "sha=${GITHUB_SHA}"
+            echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > _site/build-info.txt
           touch _site/.nojekyll
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
@@ -93,4 +115,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
