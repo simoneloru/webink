@@ -22,20 +22,27 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          # freeink-sdk nests lucide; recursive + full history not required
+          fetch-depth: 1
 
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3
+          sudo apt-get install -y cmake ninja-build python3 python3-pip python3-yaml
 
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 3.1.74
+          # Match a recent toolchain; local bring-up used 6.x
+          version: 4.0.6
           actions-cache-folder: emsdk-cache
 
       - name: Verify emcc
-        run: emcc -v
+        run: |
+          emcc -v
+          which emcmake
+          cmake --version
+          ninja --version
 
       - name: Generate icons
         run: python3 scripts/gen_icons.py
@@ -48,18 +55,26 @@ jobs:
         run: |
           python3 scripts/gen_i18n.py
           python3 scripts/build_web.py || true
+          test -f lib/I18n/I18nKeys.h
 
       - name: Configure & build
         run: |
+          set -euo pipefail
           emcmake cmake -S wasm -B wasm/build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build wasm/build --parallel
+          cmake --build wasm/build --parallel 2>&1 | tee build.log
+          test -f www/crossink.js
+          test -f www/crossink.wasm
+          ls -lh www/crossink.js www/crossink.wasm
 
       - name: Assemble site
         run: |
           mkdir -p _site
           cp -R www/* _site/
+          # Drop local-only junk if any
+          rm -f _site/.DS_Store
           test -f _site/crossink.js
           test -f _site/crossink.wasm
+          test -f _site/index.html
           touch _site/.nojekyll
 
       - name: Upload Pages artifact
