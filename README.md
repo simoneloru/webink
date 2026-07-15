@@ -55,18 +55,16 @@ Once deployed (GitHub Pages after CI succeeds):
 
 ### Controls
 
-Same mapping as the CrossPoint desktop simulator:
+On-screen **X4-style chrome** surrounds the canvas (side page keys + front Left / OK / Right / Back / Power). They inject the same key events as the CrossPoint desktop simulator.
 
 | Input | Action |
 |--------|--------|
-| ↑ / ↓ | Side buttons (page back / forward) |
-| ← / → | Front buttons |
-| Enter | Confirm / select |
-| Esc | Back |
-| P | Power |
-| S | Sleep (simulator) |
-
-On touch devices, canvas zones map to the same keys (left/right thirds, top/bottom strips; long-press center ≈ Back).
+| On-screen ▲ / ▼ (sides) | Page back / forward |
+| On-screen ◀ ● ▶ | Front left / Confirm / Front right |
+| On-screen Back / Power | Esc / P |
+| Keyboard ↑ ↓ ← → Enter Esc P | Same as simulator |
+| Canvas edge taps | Optional page / OK zones; long-press center ≈ Back |
+| S (keyboard) | Sleep (simulator) |
 
 ---
 

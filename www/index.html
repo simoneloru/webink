@@ -5,65 +5,198 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#e8e4d9" />
   <meta name="description" content="CrossInk e-reader in the browser (client-side only)" />
-  <!-- Required for SharedArrayBuffer when using pthread Wasm builds -->
   <meta http-equiv="Cross-Origin-Opener-Policy" content="same-origin" />
   <meta http-equiv="Cross-Origin-Embedder-Policy" content="require-corp" />
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <title>CrossInk (Web)</title>
   <style>
-    :root { color-scheme: light dark; }
+    :root {
+      color-scheme: light dark;
+      --bg: #121212;
+      --panel: #1a1a1a;
+      --bezel: #2a2a2a;
+      --btn: #333;
+      --btn-active: #4a4a4a;
+      --btn-border: #555;
+      --ink: #e8e4d9;
+      --text: #eee;
+      --muted: #999;
+      --safe-b: env(safe-area-inset-bottom, 0px);
+    }
     * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       margin: 0;
       font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-      background: #121212;
-      color: #eee;
+      background: var(--bg);
+      color: var(--text);
       display: flex;
       flex-direction: column;
       min-height: 100dvh;
+      user-select: none;
+      -webkit-user-select: none;
     }
+
     header {
       display: flex;
-      gap: 0.5rem;
+      gap: 0.45rem;
       align-items: center;
       flex-wrap: wrap;
-      padding: 0.55rem 0.75rem;
+      padding: 0.5rem 0.7rem;
       background: #0c0c0c;
       border-bottom: 1px solid #2a2a2a;
+      flex-shrink: 0;
     }
     header strong { letter-spacing: 0.02em; }
+    header .tag {
+      opacity: 0.55;
+      font-size: 0.78rem;
+    }
     header button, header label.btn {
       background: #222;
-      color: #eee;
+      color: var(--text);
       border: 1px solid #3a3a3a;
       border-radius: 8px;
-      padding: 0.4rem 0.7rem;
+      padding: 0.38rem 0.65rem;
       cursor: pointer;
-      font-size: 0.88rem;
+      font-size: 0.85rem;
     }
     header button:hover, header label.btn:hover { background: #2c2c2c; }
     header button:disabled { opacity: 0.45; cursor: not-allowed; }
-    #status { opacity: 0.85; font-size: 0.82rem; margin-left: auto; max-width: 45ch; text-align: right; }
-    #wrap {
+    #status {
+      opacity: 0.85;
+      font-size: 0.78rem;
+      margin-left: auto;
+      max-width: 40ch;
+      text-align: right;
+    }
+
+    /* Device stage: canvas + side buttons + front bar (X4-like) */
+    #stage {
       flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      padding: 0.4rem 0.5rem calc(0.5rem + var(--safe-b));
+      gap: 0.45rem;
+    }
+
+    #device {
+      flex: 1;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      grid-template-rows: 1fr;
+      gap: 0.35rem;
+      align-items: stretch;
+      max-width: 960px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    #canvas-wrap {
       display: grid;
       place-items: center;
-      padding: 0.5rem;
+      min-width: 0;
       min-height: 0;
+      background: var(--bezel);
+      border-radius: 10px;
+      padding: 0.35rem;
+      box-shadow: inset 0 0 0 1px #0006, 0 8px 28px #0008;
     }
+
     #canvas {
-      background: #e8e4d9;
+      background: var(--ink);
       max-width: 100%;
-      max-height: calc(100dvh - 52px);
+      max-height: 100%;
       width: auto;
       height: auto;
       image-rendering: pixelated;
       touch-action: none;
-      border-radius: 4px;
-      box-shadow: 0 10px 40px #000a;
+      border-radius: 2px;
       outline: none;
     }
+
+    /* Side buttons (page) — like X4 side cluster */
+    .side-col {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.45rem;
+      width: 3.1rem;
+    }
+    .side-col.right {
+      /* X4 often has side keys on one edge; keep both for easy reach */
+    }
+
+    .hw-btn {
+      appearance: none;
+      border: 1px solid var(--btn-border);
+      background: linear-gradient(180deg, #3a3a3a, var(--btn));
+      color: var(--text);
+      border-radius: 10px;
+      font-size: 1.05rem;
+      font-weight: 600;
+      cursor: pointer;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+      box-shadow: 0 2px 0 #111, inset 0 1px 0 #fff2;
+      min-height: 3rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+    }
+    .hw-btn:active, .hw-btn.is-down {
+      background: var(--btn-active);
+      transform: translateY(1px);
+      box-shadow: 0 1px 0 #111, inset 0 1px 2px #0006;
+    }
+    .hw-btn .lbl {
+      display: block;
+      font-size: 0.58rem;
+      font-weight: 500;
+      opacity: 0.7;
+      margin-top: 0.15rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .hw-btn.stack {
+      flex-direction: column;
+      padding: 0.35rem 0.2rem;
+      gap: 0.05rem;
+    }
+
+    /* Front bar: left · confirm · right · back · power */
+    #front-bar {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0.4rem;
+      max-width: 960px;
+      width: 100%;
+      margin: 0 auto;
+      flex-shrink: 0;
+    }
+    #front-bar .hw-btn {
+      min-height: 3.4rem;
+      border-radius: 12px;
+    }
+    #front-bar .hw-btn.power {
+      background: linear-gradient(180deg, #444, #2a2a2a);
+    }
+    #front-bar .hw-btn.back {
+      background: linear-gradient(180deg, #3a3530, #2a2520);
+    }
+
+    .hint {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-align: center;
+      padding: 0 0.5rem;
+      flex-shrink: 0;
+    }
+
     #overlay {
       position: fixed;
       inset: 0;
@@ -76,18 +209,25 @@
     }
     #overlay.hidden { display: none; }
     #overlay p { max-width: 36ch; line-height: 1.45; }
-    .hint {
-      font-size: 0.75rem;
-      opacity: 0.65;
-      width: 100%;
-      padding: 0 0.75rem 0.4rem;
+
+    /* Narrow phones: smaller side columns, keep front bar fat for thumbs */
+    @media (max-width: 520px) {
+      .side-col { width: 2.6rem; }
+      .hw-btn { min-height: 2.7rem; font-size: 0.95rem; border-radius: 8px; }
+      #front-bar .hw-btn { min-height: 3.1rem; }
+      #status { max-width: 28ch; font-size: 0.72rem; }
+    }
+
+    @media (min-width: 700px) {
+      #device { gap: 0.55rem; }
+      .side-col { width: 3.6rem; }
     }
   </style>
 </head>
 <body>
   <header>
     <strong>CrossInk</strong>
-    <span style="opacity:.6;font-size:.8rem">web</span>
+    <span class="tag">web</span>
     <label class="btn">
       Open EPUB
       <input id="epub" type="file" accept=".epub,application/epub+zip" hidden />
@@ -96,10 +236,65 @@
     <button id="install" type="button" hidden>Install</button>
     <span id="status">Loading…</span>
   </header>
-  <p class="hint">Books stay on this device only (IndexedDB). Keys: arrows · Enter · Esc · P</p>
 
-  <div id="wrap">
-    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0"></canvas>
+  <div id="stage">
+    <div id="device">
+      <!-- Left side: page back / forward (sim: Up / Down) -->
+      <div class="side-col left" aria-label="Side buttons">
+        <button type="button" class="hw-btn stack" data-key="ArrowUp" data-code="ArrowUp" data-key-code="38" title="Page back (side)">
+          ▲
+          <span class="lbl">Prev</span>
+        </button>
+        <button type="button" class="hw-btn stack" data-key="ArrowDown" data-code="ArrowDown" data-key-code="40" title="Page forward (side)">
+          ▼
+          <span class="lbl">Next</span>
+        </button>
+      </div>
+
+      <div id="canvas-wrap">
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0" aria-label="E-ink display"></canvas>
+      </div>
+
+      <!-- Right side: same page keys for two-handed hold -->
+      <div class="side-col right" aria-label="Side buttons (right)">
+        <button type="button" class="hw-btn stack" data-key="ArrowUp" data-code="ArrowUp" data-key-code="38" title="Page back (side)">
+          ▲
+          <span class="lbl">Prev</span>
+        </button>
+        <button type="button" class="hw-btn stack" data-key="ArrowDown" data-code="ArrowDown" data-key-code="40" title="Page forward (side)">
+          ▼
+          <span class="lbl">Next</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Front face buttons (sim: Left / Enter / Right / Esc / P) -->
+    <div id="front-bar" aria-label="Front buttons">
+      <button type="button" class="hw-btn stack" data-key="ArrowLeft" data-code="ArrowLeft" data-key-code="37" title="Left front">
+        ◀
+        <span class="lbl">Left</span>
+      </button>
+      <button type="button" class="hw-btn stack" data-key="Enter" data-code="Enter" data-key-code="13" title="Confirm">
+        ●
+        <span class="lbl">OK</span>
+      </button>
+      <button type="button" class="hw-btn stack" data-key="ArrowRight" data-code="ArrowRight" data-key-code="39" title="Right front">
+        ▶
+        <span class="lbl">Right</span>
+      </button>
+      <button type="button" class="hw-btn stack back" data-key="Escape" data-code="Escape" data-key-code="27" title="Back">
+        ⎋
+        <span class="lbl">Back</span>
+      </button>
+      <button type="button" class="hw-btn stack power" data-key="p" data-code="KeyP" data-key-code="80" title="Power">
+        ⏻
+        <span class="lbl">Power</span>
+      </button>
+    </div>
+
+    <p class="hint">
+      Books stay on this device only. Hardware buttons match the CrossInk simulator · keyboard still works.
+    </p>
   </div>
 
   <div id="overlay"><p id="overlay-msg">Loading CrossInk…</p></div>
