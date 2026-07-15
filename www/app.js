@@ -4,7 +4,7 @@
  */
 
 /** Bump when shell logic changes. */
-const WEBINK_SHELL = 25;
+const WEBINK_SHELL = 26;
 console.info(
   `%c[webink] shell v${WEBINK_SHELL}`,
   'color:#9dcea0;font-weight:700;font-size:12px',
@@ -1047,14 +1047,8 @@ async function boot() {
   installHardwareButtons();
   installFitObserver();
 
-  // Register SW after a tick so a just-unregistered worker is not immediately reattached mid-bust.
-  if ('serviceWorker' in navigator) {
-    setTimeout(() => {
-      navigator.serviceWorker
-        .register(new URL('./sw.js', import.meta.url), { updateViaCache: 'none' })
-        .catch(() => {});
-    }, 1500);
-  }
+  // SW registered from index.html bootstrap (sw.js?v=26). Avoid double-register races.
+
 
   setOverlay('Downloading CrossInk...');
   setStatus('Downloading...', 'busy');

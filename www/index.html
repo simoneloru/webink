@@ -877,6 +877,34 @@
   </div>
 
   <div id="overlay"><p id="overlay-msg">Loading CrossInk…</p></div>
-  <script type="module" src="./app.js?v=25"></script>
+  <!-- Inline bootstrap: if an old SW is still hijacking navigations, clear it. -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      // New SW URL forces install even when an old sw.js is stuck.
+      var SW_URL = './sw.js?v=26';
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        var stale = regs.some(function (r) {
+          var u = (r.active && r.active.scriptURL) || (r.waiting && r.waiting.scriptURL) || '';
+          return u.indexOf('sw.js') !== -1 && u.indexOf('v=26') === -1;
+        });
+        if (!stale && regs.length) return;
+        return Promise.all(regs.map(function (r) { return r.unregister(); })).then(function () {
+          if (typeof caches === 'undefined') return;
+          return caches.keys().then(function (keys) {
+            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
+          });
+        }).then(function () {
+          if (stale) location.reload();
+        });
+      }).catch(function () {});
+      // Register the versioned SW after a moment (module app.js also registers).
+      setTimeout(function () {
+        navigator.serviceWorker.register(SW_URL, { updateViaCache: 'none' }).catch(function () {});
+      }, 2000);
+    })();
+  </script>
+  <script type="module" src="./app.js?v=26"></script>
 </body>
 </html>
+
