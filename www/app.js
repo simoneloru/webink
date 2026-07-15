@@ -4,7 +4,7 @@
  */
 
 /** Bump when shell logic changes. */
-const WEBINK_SHELL = 26;
+const WEBINK_SHELL = 31;
 console.info(
   `%c[webink] shell v${WEBINK_SHELL}`,
   'color:#9dcea0;font-weight:700;font-size:12px',
@@ -23,6 +23,8 @@ const installBtn = document.getElementById('install');
 const navLibrary = document.getElementById('nav-library');
 const navHelp = document.getElementById('nav-help');
 const navReader = document.getElementById('nav-reader');
+const orientRotateBtn = document.getElementById('orient-rotate');
+const orientAutoBtn = document.getElementById('orient-auto');
 const viewReader = document.getElementById('view-reader');
 const viewLibrary = document.getElementById('view-library');
 const viewHelp = document.getElementById('view-help');
@@ -415,6 +417,42 @@ function syncfs(mod, populate) {
   });
 }
 
+/** Ask the browser not to evict this origin (helps iOS PWA keep IndexedDB). */
+async function requestPersistentStorage() {
+  try {
+    if (!navigator.storage?.persist) return false;
+    if (typeof navigator.storage.persisted === 'function') {
+      if (await navigator.storage.persisted()) {
+        console.info('[webink] storage already persistent');
+        return true;
+      }
+    }
+    const ok = await navigator.storage.persist();
+    console.info('[webink] storage.persist()', ok);
+    return ok;
+  } catch (e) {
+    console.warn('[webink] storage.persist failed', e);
+    return false;
+  }
+}
+
+/**
+ * Flush MEMFS -> IndexedDB and surface errors (iOS often kills the app mid-write).
+ * @returns {Promise<boolean>}
+ */
+async function flushLibrary(mod, label = 'flush') {
+  if (!mod?.FS?.syncfs) return false;
+  try {
+    await syncfs(mod, false);
+    console.info(`[webink] ${label} ok, books=`, listBooks(mod).length);
+    return true;
+  } catch (e) {
+    console.error(`[webink] ${label} failed`, e);
+    setStatus(`Save failed (${label}): ${e.message || e}`, 'err');
+    return false;
+  }
+}
+
 function ensureDir(FS, path) {
   const parts = path.split('/').filter(Boolean);
   let cur = '';
@@ -460,24 +498,45 @@ function ensureValidJsonFile(FS, path, contents) {
 /**
  * Seed minimal CrossInk state so first launch doesn't log JSON EmptyInput.
  */
+/** @returns {boolean} true if any file was written */
 function seedDefaultState(FS) {
   ensureDir(FS, '/fs_/.crosspoint');
   ensureDir(FS, '/fs_/.crosspoint/synced_stats');
   // RecentBooksStore::fromJson expects { "books": [ ... ] }
-  ensureValidJsonFile(FS, '/fs_/.crosspoint/recent.json', '{"books":[]}\n');
+  return ensureValidJsonFile(FS, '/fs_/.crosspoint/recent.json', '{"books":[]}\n');
 }
 
 async function mountVirtualSd(mod) {
   const { FS } = mod;
+  // Request durable storage before IDBFS opens (iOS standalone is aggressive).
+  await requestPersistentStorage();
+
   ensureDir(FS, '/fs_');
 
   const idbfs = FS.filesystems && FS.filesystems.IDBFS;
+  let idbOk = false;
   if (idbfs) {
     try {
-      FS.mount(idbfs, {}, '/fs_');
+      // autoPersist: write-through when supported (newer Emscripten IDBFS).
+      FS.mount(idbfs, { autoPersist: true }, '/fs_');
       await syncfs(mod, true);
+      idbOk = true;
     } catch (e) {
-      console.warn('[webink] IDBFS mount failed, using session MEMFS:', e);
+      console.warn('[webink] IDBFS mount/populate failed, trying without autoPersist:', e);
+      try {
+        // If partial mount left something, ignore and retry plain IDBFS.
+        try {
+          FS.unmount('/fs_');
+        } catch {
+          /* ignore */
+        }
+        ensureDir(FS, '/fs_');
+        FS.mount(idbfs, {}, '/fs_');
+        await syncfs(mod, true);
+        idbOk = true;
+      } catch (e2) {
+        console.warn('[webink] IDBFS unavailable — session-only MEMFS:', e2);
+      }
     }
   } else {
     console.warn('[webink] IDBFS not in Wasm build - library is session-only (MEMFS)');
@@ -487,13 +546,26 @@ async function mountVirtualSd(mod) {
   ensureDir(FS, '/fs_/.crosspoint');
   ensureDir(FS, '/fs_/.fonts');
   ensureDir(FS, '/fs_/fonts');
-  seedDefaultState(FS);
-  // Persist seeds so next load doesn't re-hit EmptyInput on empty files.
-  try {
-    await syncfs(mod, false);
-  } catch {
-    /* optional */
+  const seeded = seedDefaultState(FS);
+  // Only push seeds to IDB if we actually wrote something new.
+  if (idbOk && seeded) {
+    await flushLibrary(mod, 'seed-flush');
   }
+
+  const restored = listBooks(mod);
+  console.info(
+    '[webink] virtual SD ready',
+    idbOk ? 'IDBFS' : 'MEMFS',
+    'books=',
+    restored.length,
+    restored.map((b) => b.name),
+  );
+  if (idbOk && restored.length === 0) {
+    console.info(
+      '[webink] no books in /fs_/books after restore — if you added some last session, iOS may have dropped IndexedDB or the flush never finished',
+    );
+  }
+  return { idbOk, bookCount: restored.length };
 }
 
 function sanitizeName(name) {
@@ -559,7 +631,13 @@ async function importEpubFiles(mod, files) {
       }
     }
     setStatus('Saving library to this browser...', 'busy');
-    await syncfs(mod, false);
+    // Critical on iOS: wait for IndexedDB before telling the user it's safe to leave.
+    const flushed = await flushLibrary(mod, 'import-flush');
+    if (!flushed) {
+      throw new Error('Could not persist library to device storage');
+    }
+    // Second flush: Safari sometimes drops the first large write under pressure.
+    await flushLibrary(mod, 'import-flush-2');
   } finally {
     setLibraryBusy(false);
   }
@@ -798,21 +876,51 @@ function installLibraryUi(mod) {
   window.addEventListener('dragover', onDragOver);
   window.addEventListener('drop', onDrop);
 
-  window.addEventListener('pagehide', () => {
+  // iOS PWA often kills the page before a last-second flush finishes.
+  // CrossInk writes recent.json while you read; books already got a flush at import.
+  // Periodic flush keeps recent.json (and settings) on IndexedDB before you swipe away.
+  let flushInFlight = false;
+  const backgroundFlush = (label = 'bg') => {
+    if (flushInFlight || !Module?.FS?.syncfs) return;
+    flushInFlight = true;
     try {
-      Module.FS.syncfs(false, () => {});
-    } catch {
-      /* ignore */
+      Module.FS.syncfs(false, (err) => {
+        flushInFlight = false;
+        if (err) console.warn(`[webink] ${label} flush failed`, err);
+        else console.info(`[webink] ${label} flush ok`);
+      });
+    } catch (e) {
+      flushInFlight = false;
+      console.warn(`[webink] ${label} flush threw`, e);
     }
-  });
+  };
+
+  // Every 8s while the app is visible (recent books / progress / settings).
+  const periodicId = window.setInterval(() => {
+    if (document.visibilityState !== 'visible') return;
+    backgroundFlush('periodic');
+  }, 8000);
+
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'hidden') return;
-    try {
-      Module.FS.syncfs(false, () => {});
-    } catch {
-      /* ignore */
+    if (document.visibilityState === 'hidden') backgroundFlush('hide');
+    // Extra pass when coming back: catch anything written just before hide.
+    if (document.visibilityState === 'visible') {
+      setTimeout(() => backgroundFlush('visible'), 500);
     }
   });
+  window.addEventListener('pagehide', () => backgroundFlush('pagehide'));
+  window.addEventListener('freeze', () => backgroundFlush('freeze'));
+  // Best-effort on iOS when user switches apps.
+  window.addEventListener('blur', () => backgroundFlush('blur'));
+
+  // Stop timer if the page is discarded (helps HMR / long-lived tabs).
+  window.addEventListener(
+    'pagehide',
+    () => {
+      clearInterval(periodicId);
+    },
+    { once: true },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -942,7 +1050,50 @@ function installTouchZones() {
 // ---------------------------------------------------------------------------
 // Phone / browser orientation -> CrossInk SETTINGS.orientation
 // 0=Portrait, 1=Landscape CW, 2=Inverted, 3=Landscape CCW
+// Header: Rotate (manual cycle) + Auto (follow device)
 // ---------------------------------------------------------------------------
+
+const ORIENT_AUTO_LS = 'webink.autoOrientation';
+const ORIENT_LABELS = ['Portrait', 'Landscape CW', 'Inverted', 'Landscape CCW'];
+
+/**
+ * Phones / PWA / coarse pointer — environments where following the device
+ * makes sense. Desktop monitors report landscape-primary almost always.
+ */
+function isMobileLikeOrientationHost() {
+  try {
+    if (window.matchMedia('(display-mode: standalone)').matches) return true;
+    if (typeof navigator.standalone === 'boolean' && navigator.standalone) return true;
+    if (window.matchMedia('(pointer: coarse)').matches) return true;
+    if (window.matchMedia('(max-width: 920px) and (hover: none)').matches) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+/** Default Auto: on for phone/PWA, off for desktop. */
+function loadAutoOrientationPref() {
+  try {
+    const v = localStorage.getItem(ORIENT_AUTO_LS);
+    if (v === '0' || v === 'false') return false;
+    if (v === '1' || v === 'true') return true;
+  } catch {
+    /* ignore */
+  }
+  return isMobileLikeOrientationHost();
+}
+
+function saveAutoOrientationPref(on) {
+  try {
+    localStorage.setItem(ORIENT_AUTO_LS, on ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+}
+
+/** @type {boolean} */
+let autoOrientationEnabled = loadAutoOrientationPref();
 
 /**
  * Map Screen Orientation API (or viewport) to CrossInk orientation enum.
@@ -972,7 +1123,6 @@ function mapBrowserOrientationToCrossInk() {
     if (a === 90) return 3;
     if (a === 270) return 1;
   }
-  // CSS fallback (no inverted distinction)
   if (window.matchMedia('(orientation: portrait)').matches) return 0;
   return 3;
 }
@@ -997,16 +1147,80 @@ function pushOrientationToFirmware(mod, o) {
   setTimeout(() => fitDeviceScreen(), 150);
 }
 
+/**
+ * Reflect Auto toggle + Rotate tooltip in the header bar.
+ * @param {number} [currentOrient]
+ */
+function updateOrientationBarUi(currentOrient) {
+  if (orientAutoBtn) {
+    orientAutoBtn.classList.toggle('is-on', autoOrientationEnabled);
+    orientAutoBtn.setAttribute('aria-pressed', autoOrientationEnabled ? 'true' : 'false');
+    orientAutoBtn.title = autoOrientationEnabled
+      ? 'Auto orientation on — follows device. Click to lock.'
+      : 'Auto orientation off — locked. Click to follow device.';
+  }
+  if (orientRotateBtn && typeof currentOrient === 'number' && currentOrient >= 0) {
+    const label = ORIENT_LABELS[currentOrient] || String(currentOrient);
+    orientRotateBtn.title = `Rotate (now ${label}). Cycles orientation; turns Auto off.`;
+  }
+}
+
+/**
+ * Wire header Auto / Rotate. Bridge listeners always installed; sync no-ops when Auto off.
+ * @param {any} mod
+ */
 function installDeviceOrientationBridge(mod) {
   let last = -1;
   let ready = false;
+
+  const readFirmwareOrient = () => {
+    try {
+      if (typeof mod._webink_get_device_orientation === 'function') {
+        return mod._webink_get_device_orientation();
+      }
+    } catch {
+      /* ignore */
+    }
+    return -1;
+  };
+
   const sync = (reason) => {
     if (!ready) return;
+    if (!autoOrientationEnabled) return;
     const o = mapBrowserOrientationToCrossInk();
     if (o === last) return;
     last = o;
-    console.info('[webink] orientation', reason, '->', o);
+    console.info('[webink] orientation', reason, '->', o, ORIENT_LABELS[o] || '');
     pushOrientationToFirmware(mod, o);
+    updateOrientationBarUi(o);
+  };
+
+  const setAuto = (on) => {
+    autoOrientationEnabled = !!on;
+    saveAutoOrientationPref(autoOrientationEnabled);
+    console.info('[webink] auto orientation', autoOrientationEnabled ? 'on' : 'off');
+    updateOrientationBarUi(last >= 0 ? last : undefined);
+    if (autoOrientationEnabled && ready) {
+      last = -1; // force re-apply from device
+      sync('auto-on');
+    }
+  };
+
+  const rotateManual = () => {
+    // Manual cycle wins over Auto so the choice sticks.
+    if (autoOrientationEnabled) {
+      autoOrientationEnabled = false;
+      saveAutoOrientationPref(false);
+    }
+    let cur = last;
+    if (cur < 0 || cur > 3) cur = readFirmwareOrient();
+    if (cur < 0 || cur > 3) cur = 0;
+    const next = (cur + 1) % 4;
+    last = next;
+    console.info('[webink] rotate manual ->', next, ORIENT_LABELS[next] || '');
+    pushOrientationToFirmware(mod, next);
+    updateOrientationBarUi(next);
+    setStatus(`Orientation: ${ORIENT_LABELS[next]}`, 'ok');
   };
 
   if (screen.orientation?.addEventListener) {
@@ -1016,24 +1230,35 @@ function installDeviceOrientationBridge(mod) {
     setTimeout(() => sync('orientationchange'), 80);
     setTimeout(() => sync('orientationchange-late'), 350);
   });
-  // Only sync on large viewport flips (not every tiny resize).
-  let resizeTimer = 0;
+  // Resize only if the orientation media query flips (not every window drag).
+  let wasPortrait = window.matchMedia('(orientation: portrait)').matches;
   window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(() => sync('resize'), 250);
+    const nowPortrait = window.matchMedia('(orientation: portrait)').matches;
+    if (nowPortrait === wasPortrait) return;
+    wasPortrait = nowPortrait;
+    setTimeout(() => sync('resize-flip'), 200);
   });
 
-  // Wait until boot UI is up before first push (avoids black screen on start).
+  if (orientAutoBtn) {
+    orientAutoBtn.addEventListener('click', () => setAuto(!autoOrientationEnabled));
+  }
+  if (orientRotateBtn) {
+    orientRotateBtn.addEventListener('click', () => rotateManual());
+  }
+
+  updateOrientationBarUi();
+  console.info(
+    '[webink] orientation controls ready — Auto',
+    autoOrientationEnabled ? 'on' : 'off',
+    isMobileLikeOrientationHost() ? '(mobile host)' : '(desktop host)',
+  );
+
   setTimeout(() => {
     ready = true;
-    // Seed last from firmware if available, so we don't immediately rewrite settings.
-    try {
-      if (typeof mod._webink_get_device_orientation === 'function') {
-        last = mod._webink_get_device_orientation();
-      }
-    } catch {
-      /* ignore */
-    }
+    const fromFw = readFirmwareOrient();
+    if (fromFw >= 0) last = fromFw;
+    updateOrientationBarUi(last >= 0 ? last : undefined);
+    // Align with device only when Auto is on (default phone/PWA).
     sync('initial');
   }, 2500);
 }
@@ -1046,6 +1271,8 @@ async function boot() {
   installRouting();
   installHardwareButtons();
   installFitObserver();
+  // Paint Auto on/off from localStorage before Wasm is ready.
+  updateOrientationBarUi();
 
   // SW registered from index.html bootstrap (sw.js?v=26). Avoid double-register races.
 
@@ -1151,7 +1378,12 @@ async function boot() {
   setOverlay('Restoring library...');
   setStatus('Restoring library...', 'busy');
   try {
-    await mountVirtualSd(Module);
+    const { idbOk, bookCount } = await mountVirtualSd(Module);
+    if (!idbOk) {
+      setStatus('Warning: library may not persist on this browser', 'err');
+    } else if (bookCount > 0) {
+      setStatus(`Restored ${bookCount} book${bookCount === 1 ? '' : 's'}`, 'ok');
+    }
   } catch (e) {
     console.error(e);
     setStatus(`FS: ${e.message || e}`, 'err');

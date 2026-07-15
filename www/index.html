@@ -95,6 +95,20 @@
       background: #2a322a;
       border-color: #4a5a4a;
     }
+    header button.is-on {
+      background: #2a322a;
+      border-color: #5a7a5a;
+      color: #c5dfc5;
+    }
+    /* Compact icon controls (Help / Rotate / Auto) */
+    header button.icon-btn {
+      min-width: 1.85rem;
+      padding: 0.22rem 0.4rem;
+      font-size: 0.95rem;
+      line-height: 1;
+      font-weight: 600;
+      letter-spacing: 0;
+    }
     #status {
       opacity: 0.8;
       font-size: 0.72rem;
@@ -652,7 +666,9 @@
       />
     </label>
     <button id="nav-library" type="button" title="Manage library storage">Library</button>
-    <button id="nav-help" type="button" title="How to use CrossInk Web">Help</button>
+    <button id="nav-help" class="icon-btn" type="button" title="Help — how to use CrossInk Web" aria-label="Help">?</button>
+    <button id="orient-rotate" class="icon-btn" type="button" title="Rotate — cycle orientation (portrait → landscape → inverted). Turns Auto off." aria-label="Rotate orientation">↻</button>
+    <button id="orient-auto" class="icon-btn" type="button" title="Auto — follow device orientation (on for phones by default)" aria-label="Auto orientation" aria-pressed="false">📱</button>
     <button id="nav-reader" type="button" title="Back to reader" hidden>Reader</button>
     <button id="install" type="button" hidden>Install</button>
     <span id="status" role="status" aria-live="polite">Loading…</span>
@@ -753,8 +769,14 @@
           <strong>IndexedDB in this browser</strong>, not Downloads and not a cloud.
         </p>
         <p>
-          Clearing site data, using another browser, or private mode can erase the library.
-          Use the <strong>Library</strong> page to see size, quota, and delete books.
+          On iPhone, Safari and the Home Screen icon are <strong>separate storage</strong>.
+          Always open from the same place you used to add books. After “Add book”, wait until
+          the status says the library was saved before leaving the app — iOS may kill the page
+          before a background save finishes.
+        </p>
+        <p>
+          Clearing site data, private mode, or low storage can erase the library.
+          Use <strong>Library</strong> to see size, quota, and delete books.
         </p>
       </section>
 
@@ -781,9 +803,14 @@
       <section class="help-section">
         <h2>Screen orientation</h2>
         <p>
-          Rotating the phone (or the DevTools device toolbar) updates CrossInk’s
-          <strong>Settings → Orientation</strong> to match: portrait, landscape, or inverted.
-          If a book is open, it reflows for the new layout.
+          Top bar icons: <strong>↻ Rotate</strong> cycles CrossInk orientation
+          (portrait → landscape → inverted → landscape the other way).
+          <strong>📱 Auto</strong> follows the phone when you turn it
+          (default <em>on</em> for phones / Home Screen, <em>off</em> on desktop so a
+          landscape monitor does not force landscape after a few seconds).
+          Using Rotate turns Auto off so the choice sticks; turn Auto back on to follow the device again.
+          <strong>?</strong> opens this Help page.
+          You can still change orientation from CrossInk Settings as well.
         </p>
       </section>
 
@@ -900,7 +927,7 @@
       }, 1500);
     })();
   </script>
-  <script type="module" src="./app.js?v=26"></script>
+  <script type="module" src="./app.js?v=31"></script>
 </body>
 </html>
 
