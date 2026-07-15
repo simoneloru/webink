@@ -155,15 +155,26 @@ scripts/                         # build, serve, patch helpers
 .github/workflows/deploy.yml     # Emscripten build → GitHub Pages
 ```
 
-### Deploy
+### Deploy (release tags only)
 
-GitHub Actions builds with Emscripten and deploys to Pages when:
+GitHub Actions deploys to Pages **only on version tags** (and optional manual runs).
 
-| Trigger | When |
-|---------|------|
-| Tag `v*` | e.g. `git tag v0.1.0 && git push origin v0.1.0` (release) |
-| Push to `main` | continuous site updates |
-| **workflow_dispatch** | manual run from the Actions tab |
+```bash
+# After merging to main:
+git tag -a v0.1.2 -m "Describe the release"
+git push origin v0.1.2
+```
+
+| Trigger | What happens |
+|---------|----------------|
+| Tag `v*` | Plan → (optional) Wasm build → package → deploy |
+| **workflow_dispatch** | Same, with optional “force full Wasm rebuild” |
+| Push to `main` | **No deploy** (keeps CI quiet while you iterate) |
+
+**Faster releases**
+
+- If only `www/`, docs, or CI shell change since the previous `v*` tag → **shell-only**: reuses the live `crossink.js` / `.wasm` from the site (no Emscripten).
+- If `wasm/`, `vendor/`, or patch/build scripts change → **full Wasm rebuild** with **ccache** + CMake build-tree cache.
 
 Repo setting: **Pages → Source: GitHub Actions**.
 

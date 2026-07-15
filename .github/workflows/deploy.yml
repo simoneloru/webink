@@ -1,14 +1,17 @@
 name: Build CrossInk Wasm & Deploy Pages
 
-# Deploy on:
-#   - version tags (v0.1.0, v1.2.3, …)  ← release path
-#   - pushes to main                     ← continuous site updates
-#   - manual run from Actions UI
+# Release-only deploy: tags v* (and manual runs).
+# Full Emscripten rebuild only when C++ / patches / CMake change; otherwise
+# reuse the last live Wasm from GitHub Pages (shell-only releases).
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      force_full_build:
+        description: "Force a full Wasm rebuild even if only www/ changed"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -16,11 +19,94 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: pages-release
+  cancel-in-progress: false
 
 jobs:
-  build:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      need_wasm: ${{ steps.decide.outputs.need_wasm }}
+      version: ${{ steps.decide.outputs.version }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # Submodules not required for path planning
+          submodules: false
+
+      - name: Decide build mode
+        id: decide
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+          else
+            VERSION="manual-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+          FORCE="${{ inputs.force_full_build || false }}"
+          if [[ "${FORCE}" == "true" ]]; then
+            echo "need_wasm=true" >> "$GITHUB_OUTPUT"
+            echo "reason=force_full_build" >> "$GITHUB_OUTPUT"
+            echo "Plan: FULL wasm (forced)"
+            exit 0
+          fi
+
+          # First tag / no previous tag → must build
+          PREV=""
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            PREV="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
+          else
+            PREV="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          fi
+
+          if [[ -z "${PREV}" ]]; then
+            echo "need_wasm=true" >> "$GITHUB_OUTPUT"
+            echo "reason=no_previous_tag" >> "$GITHUB_OUTPUT"
+            echo "Plan: FULL wasm (no previous tag)"
+            exit 0
+          fi
+
+          echo "Comparing ${PREV}..HEAD"
+          mapfile -t CHANGED < <(git diff --name-only "${PREV}" HEAD || true)
+          if [[ ${#CHANGED[@]} -eq 0 ]]; then
+            echo "need_wasm=false" >> "$GITHUB_OUTPUT"
+            echo "reason=no_file_changes" >> "$GITHUB_OUTPUT"
+            echo "Plan: SHELL-only (no file changes since ${PREV})"
+            exit 0
+          fi
+
+          echo "Changed files:"
+          printf '  %s\n' "${CHANGED[@]}"
+
+          NEED=false
+          for f in "${CHANGED[@]}"; do
+            case "${f}" in
+              wasm/*|vendor/*|scripts/patch_*.sh|scripts/build.sh|scripts/patch_simulator.sh|scripts/patch_crossink_emscripten.sh)
+                NEED=true
+                break
+                ;;
+            esac
+          done
+
+          if [[ "${NEED}" == "true" ]]; then
+            echo "need_wasm=true" >> "$GITHUB_OUTPUT"
+            echo "reason=cpp_or_build_paths_changed" >> "$GITHUB_OUTPUT"
+            echo "Plan: FULL wasm (build-relevant paths changed since ${PREV})"
+          else
+            echo "need_wasm=false" >> "$GITHUB_OUTPUT"
+            echo "reason=shell_only_since_${PREV}" >> "$GITHUB_OUTPUT"
+            echo "Plan: SHELL-only (reuse live Wasm; only www/docs/ci shell changes)"
+          fi
+
+  build-wasm:
+    needs: plan
+    if: needs.plan.outputs.need_wasm == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -32,7 +118,14 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build python3 python3-pip python3-yaml
+          sudo apt-get install -y cmake ninja-build python3 python3-pip python3-yaml ccache
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: emscripten-${{ runner.os }}-wasm
+          max-size: 2G
+          verbose: 1
 
       - name: Setup Emscripten
         uses: mymindstorm/setup-emsdk@v14
@@ -40,22 +133,19 @@ jobs:
           version: 4.0.6
           actions-cache-folder: emsdk-cache
 
-      - name: Verify emcc
+      - name: Cache CMake build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            wasm/build
+          key: cmake-${{ runner.os }}-em4.0.6-${{ hashFiles('wasm/CMakeLists.txt', 'scripts/patch_*.sh', 'scripts/build.sh') }}-${{ hashFiles('vendor/CrossInk/.git', 'vendor/crosspoint-simulator/.git') }}
+          restore-keys: |
+            cmake-${{ runner.os }}-em4.0.6-
+
+      - name: Verify toolchain
         run: |
           emcc -v
-          which emcmake
-          cmake --version
-          ninja --version
-
-      - name: Resolve build version label
-        id: ver
-        run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "label=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "label=web-0.1.0-dev" >> "$GITHUB_OUTPUT"
-          fi
-          echo "Building as: $(cat "$GITHUB_OUTPUT" | sed -n 's/label=//p')"
+          ccache -s || true
 
       - name: Generate icons
         run: python3 scripts/gen_icons.py
@@ -74,32 +164,100 @@ jobs:
 
       - name: Configure & build
         env:
-          WEBINK_VERSION: ${{ steps.ver.outputs.label }}
+          WEBINK_VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
+          export CCACHE_SLOPPINESS=pch_defines,time_macros
           emcmake cmake -S wasm -B wasm/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DWEBINK_VERSION="${WEBINK_VERSION}"
           cmake --build wasm/build --parallel 2>&1 | tee build.log
           test -f www/crossink.js
           test -f www/crossink.wasm
           ls -lh www/crossink.js www/crossink.wasm
+          ccache -s || true
+
+      - name: Upload Wasm binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: crossink-wasm
+          path: |
+            www/crossink.js
+            www/crossink.wasm
+          if-no-files-found: error
+          retention-days: 30
+
+  package:
+    needs: [plan, build-wasm]
+    # Run even when build-wasm was skipped (shell-only)
+    if: always() && needs.plan.result == 'success' && (needs.build-wasm.result == 'success' || needs.build-wasm.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout shell
+        uses: actions/checkout@v5
+        with:
+          submodules: false
+          fetch-depth: 1
+
+      - name: Obtain Wasm binaries
+        env:
+          NEED_WASM: ${{ needs.plan.outputs.need_wasm }}
+          PAGES_BASE: https://simoneloru.github.io/webink
+        run: |
+          set -euo pipefail
+          mkdir -p www
+          if [[ "${NEED_WASM}" == "true" ]]; then
+            echo "Using freshly built Wasm artifact"
+          else
+            echo "Shell-only release: downloading live Wasm from ${PAGES_BASE}"
+            curl -fL --retry 3 -o www/crossink.js  "${PAGES_BASE}/crossink.js"
+            curl -fL --retry 3 -o www/crossink.wasm "${PAGES_BASE}/crossink.wasm"
+            ls -lh www/crossink.js www/crossink.wasm
+          fi
+
+      - name: Download Wasm artifact
+        if: needs.plan.outputs.need_wasm == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: crossink-wasm
+          path: www
+
+      - name: Generate icons if missing
+        run: |
+          if [[ ! -f www/icons/icon-192.png ]]; then
+            python3 scripts/gen_icons.py
+          fi
+          if [[ ! -f www/favicon.ico ]]; then
+            cp www/icons/icon-192.png www/favicon.ico
+          fi
 
       - name: Assemble site
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          NEED_WASM: ${{ needs.plan.outputs.need_wasm }}
+          REASON: ${{ needs.plan.outputs.reason }}
         run: |
+          set -euo pipefail
           mkdir -p _site
           cp -R www/* _site/
           rm -f _site/.DS_Store
           test -f _site/crossink.js
           test -f _site/crossink.wasm
           test -f _site/index.html
-          # Tiny stamp for debugging which ref is live
+          test -f _site/app.js
           {
+            echo "version=${VERSION}"
             echo "ref=${GITHUB_REF}"
             echo "sha=${GITHUB_SHA}"
+            echo "wasm_build=${NEED_WASM}"
+            echo "plan=${REASON}"
             echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > _site/build-info.txt
           touch _site/.nojekyll
+          ls -lh _site/crossink.js _site/crossink.wasm
+          cat _site/build-info.txt
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
@@ -107,7 +265,8 @@ jobs:
           path: _site
 
   deploy:
-    needs: build
+    needs: [plan, package]
+    if: always() && needs.package.result == 'success'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
