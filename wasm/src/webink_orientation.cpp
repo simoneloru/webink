@@ -1,5 +1,5 @@
-// WebInk: map browser/device screen orientation onto CrossInk SETTINGS.orientation.
-// Applied from the Wasm main loop (not directly from JS) so FreeRTOS locks stay safe.
+// WebInk: map browser screen orientation onto CrossInk SETTINGS.orientation.
+// JS only queues a value; apply happens on the Wasm main loop.
 
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
@@ -10,7 +10,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <string>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -21,7 +20,6 @@ extern ActivityManager activityManager;
 
 namespace {
 
-// -1 = none pending. Values match CrossPointSettings::ORIENTATION.
 std::atomic<int> g_pendingOrientation{-1};
 int g_lastApplied = -1;
 
@@ -40,27 +38,13 @@ void applyOrientationNow(const uint8_t orientation) {
 
   SETTINGS.orientation = orientation;
   ReaderUtils::applyOrientation(renderer, orientation);
-
-  // Persist so the choice survives reloads (throttled by only writing on change).
-  if (settingsChanged) {
-    SETTINGS.saveToFile();
-  }
-
-  // Reader layouts are orientation-specific — reopen the book so paging reflows.
-  if (activityManager.isReaderActivity()) {
-    const std::string path = activityManager.getCurrentBookPath();
-    if (!path.empty()) {
-      LOG_INF("WEBINK", "Orientation %u — reopening reader %s", static_cast<unsigned>(orientation),
-              path.c_str());
-      activityManager.goToReader(path, /*suppressBackRelease=*/true);
-      g_lastApplied = static_cast<int>(orientation);
-      return;
-    }
-  }
-
-  activityManager.requestUpdate(/*immediate=*/true);
   g_lastApplied = static_cast<int>(orientation);
-  LOG_INF("WEBINK", "Applied device orientation %u", static_cast<unsigned>(orientation));
+
+  // Do not saveToFile() here (can hitch IDBFS) and do not goToReader()
+  // (too heavy / can blank the UI). Deferred repaint is enough for menus;
+  // open books pick up orientation on next natural re-layout / reopen.
+  activityManager.requestUpdate(/*immediate=*/false);
+  LOG_INF("WEBINK", "Device orientation -> %u", static_cast<unsigned>(orientation));
 }
 
 } // namespace
@@ -68,7 +52,6 @@ void applyOrientationNow(const uint8_t orientation) {
 #ifdef __EMSCRIPTEN__
 extern "C" {
 
-// Called from JS when the phone/browser orientation changes.
 // 0=Portrait, 1=Landscape CW, 2=Inverted, 3=Landscape CCW
 EMSCRIPTEN_KEEPALIVE
 void webink_set_device_orientation(int orientation) {
@@ -89,7 +72,6 @@ int webink_get_device_orientation(void) {
 } // extern "C"
 #endif
 
-// Poll from the browser main loop (webink_main frame).
 void webink_poll_device_orientation() {
   const int pending = g_pendingOrientation.exchange(-1);
   if (pending < 0) {

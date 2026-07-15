@@ -4,7 +4,7 @@
  */
 
 /** Bump when shell logic changes. */
-const WEBINK_SHELL = 24;
+const WEBINK_SHELL = 25;
 console.info(
   `%c[webink] shell v${WEBINK_SHELL}`,
   'color:#9dcea0;font-weight:700;font-size:12px',
@@ -946,37 +946,44 @@ function installTouchZones() {
 
 /**
  * Map Screen Orientation API (or viewport) to CrossInk orientation enum.
- * @returns {number}
+ * Prefer `type` over `angle`: on desktop, angle is often 0 even in landscape.
+ * @returns {number} 0=Portrait 1=LandscapeCW 2=Inverted 3=LandscapeCCW
  */
 function mapBrowserOrientationToCrossInk() {
   const so = screen.orientation;
+  if (so && typeof so.type === 'string' && so.type.length) {
+    switch (so.type) {
+      case 'portrait-primary':
+        return 0;
+      case 'portrait-secondary':
+        return 2;
+      case 'landscape-primary':
+        return 3;
+      case 'landscape-secondary':
+        return 1;
+      default:
+        break;
+    }
+  }
   if (so && typeof so.angle === 'number') {
-    // angle: 0 upright, 90 / 270 landscape, 180 upside-down
     const a = ((so.angle % 360) + 360) % 360;
-    if (a === 0) return 0; // Portrait
-    if (a === 180) return 2; // Inverted
-    if (a === 90) return 3; // Landscape CCW (common primary landscape)
-    if (a === 270) return 1; // Landscape CW
+    if (a === 0) return 0;
+    if (a === 180) return 2;
+    if (a === 90) return 3;
+    if (a === 270) return 1;
   }
-  if (so && typeof so.type === 'string') {
-    const t = so.type;
-    if (t === 'portrait-primary') return 0;
-    if (t === 'portrait-secondary') return 2;
-    if (t === 'landscape-primary') return 3;
-    if (t === 'landscape-secondary') return 1;
-  }
-  // Fallback: CSS orientation only (no inverted / CW vs CCW)
+  // CSS fallback (no inverted distinction)
   if (window.matchMedia('(orientation: portrait)').matches) return 0;
   return 3;
 }
 
 /**
- * Push browser orientation into the Wasm firmware (queued; applied on next frame).
+ * Queue orientation into Wasm (applied on next firmware frame).
  * @param {any} mod
+ * @param {number} o
  */
-function pushOrientationToFirmware(mod) {
+function pushOrientationToFirmware(mod, o) {
   if (!mod) return;
-  const o = mapBrowserOrientationToCrossInk();
   try {
     if (typeof mod._webink_set_device_orientation === 'function') {
       mod._webink_set_device_orientation(o);
@@ -986,39 +993,49 @@ function pushOrientationToFirmware(mod) {
   } catch (e) {
     console.warn('[webink] orientation push failed', e);
   }
-  // Refit shell aperture after SDL window aspect may change.
   requestAnimationFrame(() => fitDeviceScreen());
-  setTimeout(() => fitDeviceScreen(), 100);
-  setTimeout(() => fitDeviceScreen(), 400);
+  setTimeout(() => fitDeviceScreen(), 150);
 }
 
 function installDeviceOrientationBridge(mod) {
   let last = -1;
-  const sync = () => {
+  let ready = false;
+  const sync = (reason) => {
+    if (!ready) return;
     const o = mapBrowserOrientationToCrossInk();
     if (o === last) return;
     last = o;
-    console.info('[webink] device orientation -> firmware', o);
-    pushOrientationToFirmware(mod);
+    console.info('[webink] orientation', reason, '->', o);
+    pushOrientationToFirmware(mod, o);
   };
 
-  // Screen Orientation API (Chrome, Android, DevTools device mode, modern Safari)
-  if (screen.orientation && typeof screen.orientation.addEventListener === 'function') {
-    screen.orientation.addEventListener('change', sync);
+  if (screen.orientation?.addEventListener) {
+    screen.orientation.addEventListener('change', () => sync('screen'));
   }
   window.addEventListener('orientationchange', () => {
-    setTimeout(sync, 50);
-    setTimeout(sync, 300);
+    setTimeout(() => sync('orientationchange'), 80);
+    setTimeout(() => sync('orientationchange-late'), 350);
   });
-  // Viewport fallback when Screen Orientation API is limited
+  // Only sync on large viewport flips (not every tiny resize).
+  let resizeTimer = 0;
   window.addEventListener('resize', () => {
-    // Debounce via rAF through existing fit path; still push enum
-    setTimeout(sync, 100);
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => sync('resize'), 250);
   });
 
-  // Initial apply after firmware has started
-  setTimeout(sync, 200);
-  setTimeout(sync, 800);
+  // Wait until boot UI is up before first push (avoids black screen on start).
+  setTimeout(() => {
+    ready = true;
+    // Seed last from firmware if available, so we don't immediately rewrite settings.
+    try {
+      if (typeof mod._webink_get_device_orientation === 'function') {
+        last = mod._webink_get_device_orientation();
+      }
+    } catch {
+      /* ignore */
+    }
+    sync('initial');
+  }, 2500);
 }
 
 // ---------------------------------------------------------------------------
