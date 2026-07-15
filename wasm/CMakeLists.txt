@@ -210,17 +210,15 @@ target_compile_options(crossink PRIVATE
 # Emscripten link
 # ---------------------------------------------------------------------------
 if(EMSCRIPTEN)
-  # FreeRTOS shim uses std::thread → need pthreads + SharedArrayBuffer
+  # Single-threaded Wasm (works on iOS Safari — no SharedArrayBuffer).
+  # FreeRTOS tasks cooperate via ASYNCIFY + emscripten_sleep.
   target_compile_options(crossink PRIVATE
     "SHELL:-sUSE_SDL=2"
-    -pthread
     -O2
   )
 
   target_link_options(crossink PRIVATE
     "SHELL:-sUSE_SDL=2"
-    -pthread
-    "SHELL:-sPTHREAD_POOL_SIZE=8"
     "SHELL:-sALLOW_MEMORY_GROWTH=1"
     "SHELL:-sINITIAL_MEMORY=134217728"
     "SHELL:-sSTACK_SIZE=2097152"
@@ -231,13 +229,12 @@ if(EMSCRIPTEN)
     "SHELL:-sEXPORT_ES6=1"
     "SHELL:-sEXPORT_NAME=createCrossInkModule"
     "SHELL:-sINVOKE_RUN=0"
-    "SHELL:-sENVIRONMENT=web,worker"
+    "SHELL:-sENVIRONMENT=web"
     "SHELL:-sEXPORTED_RUNTIME_METHODS=['FS','PATH','ERRNO_CODES','ENV','callMain','ccall','cwrap','UTF8ToString','lengthBytesUTF8','stringToUTF8']"
     "SHELL:-sEXPORTED_FUNCTIONS=['_main']"
     "SHELL:-sNO_DISABLE_EXCEPTION_CATCHING=0"
-    # ASYNCIFY for SDL_Delay / blocking waits that must yield to browser
     "SHELL:-sASYNCIFY"
-    "SHELL:-sASYNCIFY_STACK_SIZE=131072"
+    "SHELL:-sASYNCIFY_STACK_SIZE=262144"
     -O2
   )
 

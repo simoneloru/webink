@@ -1,10 +1,6 @@
-/* Cross-origin isolation + offline cache for pthread SharedArrayBuffer on GitHub Pages.
- *
- * GH Pages cannot set COOP/COEP. This SW rewrites every same-origin response so the
- * document becomes crossOriginIsolated after the first controlled load.
- */
+/* Offline cache only — single-threaded Wasm no longer needs COOP/COEP. */
 
-const CACHE = 'crossink-web-v3';
+const CACHE = 'crossink-web-v4-st';
 const PRECACHE = [
   './',
   './index.html',
@@ -26,7 +22,7 @@ self.addEventListener('install', (event) => {
           try {
             await cache.add(url);
           } catch {
-            /* may not exist yet during local dev */
+            /* optional */
           }
         })
       );
@@ -45,25 +41,9 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-function withIsolationHeaders(response) {
-  // Clone headers; strip COOP/COEP/CORP if present then set ours.
-  const headers = new Headers(response.headers);
-  headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-  // credentialless is more forgiving than require-corp on static hosts
-  headers.set('Cross-Origin-Embedder-Policy', 'credentialless');
-  headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
-
-  // Only isolate same-origin navigations and assets for this app.
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
@@ -72,21 +52,20 @@ self.addEventListener('fetch', (event) => {
       const cache = await caches.open(CACHE);
       try {
         const net = await fetch(req);
-        // Cache successful GETs of our static files
-        if (net.ok && (req.mode === 'navigate' || url.pathname.includes('/webink') || true)) {
+        if (net.ok) {
           try {
             cache.put(req, net.clone());
           } catch {
-            /* ignore quota / opaque */
+            /* ignore */
           }
         }
-        return withIsolationHeaders(net);
+        return net;
       } catch {
         const hit = await cache.match(req);
-        if (hit) return withIsolationHeaders(hit);
+        if (hit) return hit;
         if (req.mode === 'navigate') {
           const index = await cache.match('./index.html');
-          if (index) return withIsolationHeaders(index);
+          if (index) return index;
         }
         return Response.error();
       }

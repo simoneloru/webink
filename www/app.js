@@ -1,6 +1,6 @@
 /**
- * WebInk shell — mounts CrossInk Wasm after cross-origin isolation is ready
- * (required for pthread SharedArrayBuffer on GitHub Pages).
+ * WebInk shell — single-threaded Wasm (no SharedArrayBuffer required).
+ * Works on desktop and iOS Safari.
  */
 
 const statusEl = document.getElementById('status');
@@ -22,66 +22,6 @@ function setOverlay(msg) {
   }
   overlayMsg.textContent = msg;
   overlay.classList.remove('hidden');
-}
-
-/**
- * Pthread builds need SharedArrayBuffer → crossOriginIsolated.
- * On GitHub Pages only a controlling service worker can inject COOP/COEP.
- */
-async function ensureCrossOriginIsolated() {
-  if (window.crossOriginIsolated) {
-    return true;
-  }
-
-  if (!('serviceWorker' in navigator)) {
-    setOverlay(
-      'This browser has no service workers. CrossInk Web needs them for multi-threaded Wasm on GitHub Pages. Try Chrome/Firefox, or use a local server with COOP/COEP headers.'
-    );
-    setStatus('No service worker');
-    return false;
-  }
-
-  setOverlay('Enabling secure context for Wasm threads…');
-  setStatus('Registering service worker…');
-
-  try {
-    const reg = await navigator.serviceWorker.register(new URL('./sw.js', import.meta.url), {
-      scope: './',
-      updateViaCache: 'none',
-    });
-    await reg.update().catch(() => {});
-    await navigator.serviceWorker.ready;
-
-    // First visit: SW may not control this page yet → reload once under SW.
-    const reloaded = sessionStorage.getItem('webink-coi-reload') === '1';
-    if (!navigator.serviceWorker.controller || !window.crossOriginIsolated) {
-      if (!reloaded) {
-        sessionStorage.setItem('webink-coi-reload', '1');
-        setStatus('Reloading for thread support…');
-        // Give claim() a tick
-        await new Promise((r) => setTimeout(r, 150));
-        location.reload();
-        return false;
-      }
-    }
-  } catch (e) {
-    console.error(e);
-    setOverlay(`Service worker failed: ${e.message || e}`);
-    setStatus('SW failed');
-    return false;
-  }
-
-  if (!window.crossOriginIsolated) {
-    setOverlay(
-      'Still not cross-origin isolated (SharedArrayBuffer unavailable). Hard-refresh (Ctrl/Cmd+Shift+R), or open in a private window once so the new service worker can take control.'
-    );
-    setStatus('Not isolated — see message');
-    console.error('crossOriginIsolated=false; typeof SharedArrayBuffer=', typeof SharedArrayBuffer);
-    return false;
-  }
-
-  sessionStorage.removeItem('webink-coi-reload');
-  return true;
 }
 
 function syncfs(Module, populate) {
@@ -151,23 +91,21 @@ function fireKey(type, { key, code, keyCode }) {
 
 function installHardwareButtons() {
   const buttons = document.querySelectorAll('.hw-btn[data-key]');
-
   const press = (btn) => {
-    const key = btn.dataset.key;
-    const code = btn.dataset.code || key;
-    const keyCode = Number(btn.dataset.keyCode || 0);
     btn.classList.add('is-down');
-    btn._key = { key, code, keyCode };
+    btn._key = {
+      key: btn.dataset.key,
+      code: btn.dataset.code || btn.dataset.key,
+      keyCode: Number(btn.dataset.keyCode || 0),
+    };
     fireKey('keydown', btn._key);
   };
-
   const release = (btn) => {
     if (!btn._key) return;
     fireKey('keyup', btn._key);
     btn._key = null;
     btn.classList.remove('is-down');
   };
-
   for (const btn of buttons) {
     btn.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -184,7 +122,6 @@ function installHardwareButtons() {
     });
     btn.addEventListener('click', (e) => e.preventDefault());
   }
-
   window.addEventListener('blur', () => {
     for (const btn of buttons) release(btn);
   });
@@ -201,10 +138,8 @@ function installTouchZones() {
     if (x > 0.72) return { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 };
     return { key: 'Enter', code: 'Enter', keyCode: 13 };
   };
-
   let longTimer = null;
   let lastKey = null;
-
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     canvas.focus({ preventScroll: true });
@@ -218,7 +153,6 @@ function installTouchZones() {
       lastKey = null;
     }, 700);
   });
-
   const end = (e) => {
     e.preventDefault();
     if (longTimer) clearTimeout(longTimer);
@@ -235,9 +169,10 @@ function installTouchZones() {
 async function boot() {
   installHardwareButtons();
 
-  // Do not import/start Wasm until SAB is available.
-  const ok = await ensureCrossOriginIsolated();
-  if (!ok) return;
+  // Optional offline SW (no longer required for threads)
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register(new URL('./sw.js', import.meta.url)).catch(() => {});
+  }
 
   setOverlay('Downloading CrossInk…');
   setStatus('Downloading…');
@@ -248,7 +183,7 @@ async function boot() {
     createCrossInkModule = mod.default ?? mod.createCrossInkModule;
   } catch (e) {
     console.error(e);
-    setOverlay('crossink.js not found. Build first or wait for deploy.');
+    setOverlay('crossink.js missing. Wait for deploy or build locally.');
     setStatus('Build missing');
     return;
   }
@@ -260,7 +195,6 @@ async function boot() {
       locateFile: (path) => new URL(path, import.meta.url).href,
       print: (...a) => console.log('[crossink]', ...a),
       printErr: (...a) => {
-        // Filter noisy “still waiting on run dependencies” once isolated
         const msg = a.join(' ');
         if (msg.includes('still waiting on run dependencies')) return;
         console.error('[crossink]', ...a);
@@ -280,30 +214,27 @@ async function boot() {
 
   window.Module = Module;
 
-  setOverlay('Restoring library (IndexedDB)…');
+  setOverlay('Restoring library…');
   setStatus('Restoring library…');
   try {
     await mountVirtualSd(Module);
   } catch (e) {
     console.error(e);
-    setStatus(`FS mount failed: ${e.message || e}`);
+    setStatus(`FS: ${e.message || e}`);
   }
 
   setOverlay(null);
-  setStatus('Starting CrossInk…');
+  setStatus('Starting…');
   canvas.focus({ preventScroll: true });
 
   try {
-    if (typeof Module.callMain === 'function') {
-      Module.callMain([]);
-    } else if (typeof Module._main === 'function') {
-      Module._main();
-    }
+    if (typeof Module.callMain === 'function') Module.callMain([]);
+    else if (typeof Module._main === 'function') Module._main();
     setStatus('Running');
   } catch (e) {
     console.error(e);
     setStatus(`Start failed: ${e.message || e}`);
-    setOverlay(`CrossInk failed to start: ${e.message || e}`);
+    setOverlay(`CrossInk failed: ${e.message || e}`);
   }
 
   epubInput.addEventListener('change', async () => {
@@ -312,7 +243,7 @@ async function boot() {
     try {
       setStatus('Importing…');
       const { name, bytes } = await importEpub(Module, file);
-      setStatus(`Saved ${name} (${(bytes / 1e6).toFixed(2)} MB) — open via file browser`);
+      setStatus(`Saved ${name} (${(bytes / 1e6).toFixed(2)} MB)`);
     } catch (e) {
       console.error(e);
       setStatus(`Import failed: ${e.message || e}`);
