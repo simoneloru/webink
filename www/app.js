@@ -1,38 +1,14 @@
 /**
- * WebInk shell — single-threaded Wasm (no SharedArrayBuffer).
+ * WebInk shell - single-threaded Wasm (no SharedArrayBuffer).
  * Pages: #reader | #library | #help
  */
 
-/** Bump when shell logic changes — also used for one-shot SW/cache purge. */
-const WEBINK_SHELL = 22;
+/** Bump when shell logic changes. */
+const WEBINK_SHELL = 23;
 console.info(
   `%c[webink] shell v${WEBINK_SHELL}`,
   'color:#9dcea0;font-weight:700;font-size:12px',
 );
-
-// If an old Service Worker still serves a stale app.js, nuke caches once and reload.
-// Stack traces at printErr @ app.js:924 mean pre-v22 code.
-(function bustStaleShellOnce() {
-  const key = `webink-shell-${WEBINK_SHELL}`;
-  try {
-    if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, '1');
-  } catch {
-    return;
-  }
-  if (!('serviceWorker' in navigator)) return;
-  Promise.resolve()
-    .then(async () => {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      const keys = (await caches.keys?.()) || [];
-      if (regs.length === 0 && keys.length === 0) return;
-      await Promise.all(regs.map((r) => r.unregister()));
-      await Promise.all(keys.map((k) => caches.delete(k)));
-      console.info('[webink] cleared stale SW/cache → reloading');
-      location.reload();
-    })
-    .catch(() => {});
-})();
 
 const statusEl = document.getElementById('status');
 const overlay = document.getElementById('overlay');
@@ -76,17 +52,17 @@ const PAGE_TITLES = {
 };
 
 /**
- * Physical e-ink panel buffer is 800×480, but CrossInk's *logical* window
- * depends on Settings → Orientation:
- *   Portrait (default)  → SDL window 480×800  (3:5, tall)
- *   Landscape           → SDL window 800×480  (5:3, wide)
+ * Physical e-ink panel buffer is 800x480, but CrossInk's *logical* window
+ * depends on Settings -> Orientation:
+ *   Portrait (default)  -> SDL window 480x800  (3:5, tall)
+ *   Landscape           -> SDL window 800x480  (5:3, wide)
  *
- * The shell MUST match that window aspect. Forcing 800×480 while firmware is
- * in Portrait was stretching the canvas into a “fake 16:9” strip.
+ * The shell MUST match that window aspect. Forcing 800x480 while firmware is
+ * in Portrait was stretching the canvas into a "fake 16:9" strip.
  */
 const PANEL_NATIVE_W = 800;
 const PANEL_NATIVE_H = 480;
-/** CrossInk default orientation is Portrait → logical 480×800 */
+/** CrossInk default orientation is Portrait -> logical 480x800 */
 const DEFAULT_LOGIC_W = PANEL_NATIVE_H; // 480
 const DEFAULT_LOGIC_H = PANEL_NATIVE_W; // 800
 const BOOKS_DIR = '/fs_/books';
@@ -95,7 +71,7 @@ const stageEl = document.getElementById('stage');
 const frontBarEl = document.getElementById('front-bar');
 
 // ---------------------------------------------------------------------------
-// Layout — match SDL logical window aspect, scale uniformly to fill stage
+// Layout - match SDL logical window aspect, scale uniformly to fill stage
 // ---------------------------------------------------------------------------
 
 function cssPx(varName, fallback) {
@@ -112,7 +88,7 @@ function getLogicalDisplaySize() {
   const bw = canvas?.width || 0;
   const bh = canvas?.height || 0;
   if (bw >= 16 && bh >= 16) {
-    // Normalize to the nearer native pair (480×800 or 800×480) for clean integers.
+    // Normalize to the nearer native pair (480x800 or 800x480) for clean integers.
     const aspect = bw / bh;
     if (aspect < 1) {
       // Portrait-ish
@@ -127,7 +103,7 @@ function getLogicalDisplaySize() {
   };
 }
 
-/** Largest box with given aspect (w/h) inside maxW×maxH. */
+/** Largest box with given aspect (w/h) inside maxWxmaxH. */
 function fitAspect(maxW, maxH, aspect) {
   maxW = Math.max(1, Math.floor(maxW));
   maxH = Math.max(1, Math.floor(maxH));
@@ -239,7 +215,7 @@ function fitDeviceScreen() {
   stageEl.classList.toggle('is-logic-portrait', logicH > logicW);
   document.body.classList.toggle('logic-portrait', logicH > logicW);
 
-  // Fill aperture exactly — no CSS rotate; SDL already draws the right orientation.
+  // Fill aperture exactly - no CSS rotate; SDL already draws the right orientation.
   canvas.style.setProperty('width', `${screenW}px`, 'important');
   canvas.style.setProperty('height', `${screenH}px`, 'important');
   canvas.style.setProperty('max-width', 'none', 'important');
@@ -342,7 +318,7 @@ function setOverlay(msg) {
 }
 
 function formatBytes(n) {
-  if (!Number.isFinite(n) || n < 0) return '—';
+  if (!Number.isFinite(n) || n < 0) return '-';
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(2)} MB`;
@@ -504,7 +480,7 @@ async function mountVirtualSd(mod) {
       console.warn('[webink] IDBFS mount failed, using session MEMFS:', e);
     }
   } else {
-    console.warn('[webink] IDBFS not in Wasm build — library is session-only (MEMFS)');
+    console.warn('[webink] IDBFS not in Wasm build - library is session-only (MEMFS)');
   }
 
   ensureDir(FS, BOOKS_DIR);
@@ -568,8 +544,8 @@ async function importEpubFiles(mod, files) {
       const file = list[i];
       setStatus(
         list.length === 1
-          ? `Adding ${file.name}…`
-          : `Adding ${i + 1}/${list.length}: ${file.name}…`,
+          ? `Adding ${file.name}...`
+          : `Adding ${i + 1}/${list.length}: ${file.name}...`,
         'busy',
       );
       try {
@@ -582,7 +558,7 @@ async function importEpubFiles(mod, files) {
         failed++;
       }
     }
-    setStatus('Saving library to this browser…', 'busy');
+    setStatus('Saving library to this browser...', 'busy');
     await syncfs(mod, false);
   } finally {
     setLibraryBusy(false);
@@ -597,7 +573,7 @@ function describeImportResult({ ok, failed, lastName, totalBytes }) {
   const size = formatBytes(totalBytes);
   if (ok === 1 && !failed) {
     return {
-      msg: `Added “${lastName}” (${size}) · Library to manage`,
+      msg: `Added "${lastName}" (${size}) · Library to manage`,
       kind: 'ok',
     };
   }
@@ -713,15 +689,15 @@ async function refreshLibraryPage() {
 
 async function deleteBook(book) {
   if (!Module || libraryBusy) return;
-  const ok = window.confirm(`Delete “${book.name}” from this browser’s library?`);
+  const ok = window.confirm(`Delete "${book.name}" from this browser's library?`);
   if (!ok) return;
 
   setLibraryBusy(true);
-  setStatus(`Deleting ${book.name}…`, 'busy');
+  setStatus(`Deleting ${book.name}...`, 'busy');
   try {
     Module.FS.unlink(book.path);
     await syncfs(Module, false);
-    setStatus(`Deleted “${book.name}”`, 'ok');
+    setStatus(`Deleted "${book.name}"`, 'ok');
     await refreshLibraryPage();
   } catch (e) {
     console.error(e);
@@ -763,7 +739,7 @@ function installLibraryUi(mod) {
 
   libRefresh?.addEventListener('click', async () => {
     if (libraryBusy) return;
-    setStatus('Refreshing…', 'busy');
+    setStatus('Refreshing...', 'busy');
     try {
       await refreshLibraryPage();
       setStatus('Library updated', 'ok');
@@ -776,7 +752,7 @@ function installLibraryUi(mod) {
   libSave?.addEventListener('click', async () => {
     if (libraryBusy) return;
     setLibraryBusy(true);
-    setStatus('Flushing browser storage…', 'busy');
+    setStatus('Flushing browser storage...', 'busy');
     try {
       await syncfs(Module, false);
       setStatus('Browser storage up to date', 'ok');
@@ -981,8 +957,8 @@ async function boot() {
     }, 1500);
   }
 
-  setOverlay('Downloading CrossInk…');
-  setStatus('Downloading…', 'busy');
+  setOverlay('Downloading CrossInk...');
+  setStatus('Downloading...', 'busy');
 
   let createCrossInkModule;
   try {
@@ -1032,7 +1008,7 @@ async function boot() {
       return;
     }
 
-    // Untagged: stdout → log, stderr → warn (not error spam)
+    // Untagged: stdout -> log, stderr -> warn (not error spam)
     if (asErr) console.warn('[crossink]', msg);
     else console.log('[crossink]', msg);
   };
@@ -1079,8 +1055,8 @@ async function boot() {
   fitDeviceScreen();
   requestAnimationFrame(fitDeviceScreen);
 
-  setOverlay('Restoring library…');
-  setStatus('Restoring library…', 'busy');
+  setOverlay('Restoring library...');
+  setStatus('Restoring library...', 'busy');
   try {
     await mountVirtualSd(Module);
   } catch (e) {
@@ -1089,7 +1065,7 @@ async function boot() {
   }
 
   setOverlay(null);
-  setStatus('Starting…', 'busy');
+  setStatus('Starting...', 'busy');
   canvas.focus({ preventScroll: true });
   fitDeviceScreen();
 
@@ -1097,7 +1073,7 @@ async function boot() {
     if (typeof Module.callMain === 'function') Module.callMain([]);
     else if (typeof Module._main === 'function') Module._main();
     setStatus('Running');
-    // SDL sets canvas buffer size during/after first frames — re-fit aspect then.
+    // SDL sets canvas buffer size during/after first frames - re-fit aspect then.
     requestAnimationFrame(fitDeviceScreen);
     setTimeout(fitDeviceScreen, 100);
     setTimeout(fitDeviceScreen, 400);

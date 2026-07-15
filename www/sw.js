@@ -1,16 +1,14 @@
-/* Offline cache only — single-threaded Wasm no longer needs COOP/COEP. */
+/* Offline shell for WebInk. Never serve JS for document navigations. */
 
-const CACHE = 'crossink-web-v22-st';
+const CACHE = 'crossink-web-v23-st';
+
 const PRECACHE = [
-  './',
   './index.html',
   './app.js',
   './manifest.json',
   './favicon.ico',
   './icons/icon-192.png',
   './icons/icon-512.png',
-  './crossink.js',
-  './crossink.wasm',
 ];
 
 self.addEventListener('install', (event) => {
@@ -22,7 +20,7 @@ self.addEventListener('install', (event) => {
           try {
             await cache.add(url);
           } catch {
-            /* optional (wasm may be large / missing in pure shell deploys) */
+            /* optional */
           }
         }),
       );
@@ -41,62 +39,72 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+function isNavigation(req) {
+  return req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // Shell files: always prefer network so log fixes / layout land without manual SW nuking.
-  const path = url.pathname;
-  const isShell =
-    path.endsWith('/') ||
-    path.endsWith('/index.html') ||
-    path.endsWith('/app.js') ||
-    path.endsWith('/sw.js');
-
-  event.respondWith(
-    (async () => {
-      const cache = await caches.open(CACHE);
-      if (isShell) {
+  // HTML navigations: network first, HTML only as fallback (never app.js).
+  if (isNavigation(req)) {
+    event.respondWith(
+      (async () => {
         try {
           const net = await fetch(req, { cache: 'no-store' });
           if (net.ok) {
+            const cache = await caches.open(CACHE);
             try {
-              // Cache without query string variants for offline.
-              const cacheKey = path.endsWith('/app.js')
-                ? new Request(new URL('./app.js', self.registration.scope).href)
-                : req;
-              cache.put(cacheKey, net.clone());
+              await cache.put('./index.html', net.clone());
             } catch {
               /* ignore */
             }
           }
           return net;
         } catch {
-          const hit = (await cache.match(req)) || (await cache.match('./app.js')) || (await cache.match('./index.html'));
-          if (hit) return hit;
-          return Response.error();
+          const cache = await caches.open(CACHE);
+          return (
+            (await cache.match('./index.html')) ||
+            (await cache.match('./')) ||
+            new Response('<!DOCTYPE html><title>Offline</title><p>WebInk offline</p>', {
+              headers: { 'Content-Type': 'text/html; charset=utf-8' },
+            })
+          );
         }
-      }
+      })(),
+    );
+    return;
+  }
 
+  // Static assets: network first, cache fallback.
+  event.respondWith(
+    (async () => {
+      const cache = await caches.open(CACHE);
       try {
         const net = await fetch(req);
         if (net.ok) {
           try {
-            cache.put(req, net.clone());
+            // Normalize app.js?* to app.js for offline
+            if (url.pathname.endsWith('/app.js')) {
+              await cache.put('./app.js', net.clone());
+            } else {
+              await cache.put(req, net.clone());
+            }
           } catch {
             /* ignore */
           }
         }
         return net;
       } catch {
+        if (url.pathname.endsWith('/app.js')) {
+          const hit = await cache.match('./app.js');
+          if (hit) return hit;
+        }
         const hit = await cache.match(req);
         if (hit) return hit;
-        if (req.mode === 'navigate') {
-          const index = await cache.match('./index.html');
-          if (index) return index;
-        }
         return Response.error();
       }
     })(),
