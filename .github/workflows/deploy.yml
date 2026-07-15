@@ -47,8 +47,10 @@ jobs:
       - name: Generate icons
         run: python3 scripts/gen_icons.py
 
-      - name: Patch simulator for web APIs
-        run: ./scripts/patch_simulator.sh
+      - name: Patch simulator + CrossInk for Emscripten
+        run: |
+          ./scripts/patch_simulator.sh
+          ./scripts/patch_crossink_emscripten.sh
 
       - name: Generate CrossInk i18n / web assets
         working-directory: vendor/CrossInk

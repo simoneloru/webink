@@ -18,6 +18,7 @@ fi
 
 git submodule update --init --recursive
 ./scripts/patch_simulator.sh
+./scripts/patch_crossink_emscripten.sh
 
 mkdir -p www/icons
 # Placeholder icons if missing
