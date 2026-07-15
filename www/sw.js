@@ -1,6 +1,6 @@
 /* Offline shell for WebInk. Never serve JS for document navigations. */
 
-const CACHE = 'crossink-web-v23-st';
+const CACHE = 'crossink-web-v24-st';
 
 const PRECACHE = [
   './index.html',

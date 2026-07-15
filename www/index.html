@@ -779,11 +779,21 @@
       </section>
 
       <section class="help-section">
+        <h2>Screen orientation</h2>
+        <p>
+          Rotating the phone (or the DevTools device toolbar) updates CrossInk’s
+          <strong>Settings → Orientation</strong> to match: portrait, landscape, or inverted.
+          If a book is open, it reflows for the new layout.
+        </p>
+      </section>
+
+      <section class="help-section">
         <h2>Tips &amp; limits</h2>
         <ul>
           <li>Large EPUBs use browser storage quota (especially tight on iOS Safari).</li>
           <li>Wi‑Fi / OTA / hardware transfer menus may appear but are stubbed or unused on the web.</li>
           <li>You can install this site as a PWA (“Install”) for a fuller-screen experience when the browser offers it.</li>
+          <li>Orientation uses the browser Screen Orientation API (not the raw gyroscope). Lock screen rotation in the OS if you want to freeze it.</li>
         </ul>
       </section>
 
@@ -867,6 +877,6 @@
   </div>
 
   <div id="overlay"><p id="overlay-msg">Loading CrossInk…</p></div>
-  <script type="module" src="./app.js?v=23"></script>
+  <script type="module" src="./app.js?v=24"></script>
 </body>
 </html>

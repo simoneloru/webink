@@ -121,6 +121,7 @@ set(WASM_SRC
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webink_main.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webink_network_stubs.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/webink_activity_stubs.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/webink_orientation.cpp"
 )
 
 add_executable(crossink
@@ -233,7 +234,7 @@ if(EMSCRIPTEN)
     "SHELL:-sINVOKE_RUN=0"
     "SHELL:-sENVIRONMENT=web"
     "SHELL:-sEXPORTED_RUNTIME_METHODS=['FS','PATH','ERRNO_CODES','ENV','callMain','ccall','cwrap','UTF8ToString','lengthBytesUTF8','stringToUTF8']"
-    "SHELL:-sEXPORTED_FUNCTIONS=['_main']"
+    "SHELL:-sEXPORTED_FUNCTIONS=['_main','_webink_set_device_orientation','_webink_get_device_orientation']"
     "SHELL:-sNO_DISABLE_EXCEPTION_CATCHING=0"
     "SHELL:-sASYNCIFY"
     "SHELL:-sASYNCIFY_STACK_SIZE=262144"

@@ -4,7 +4,7 @@
  */
 
 /** Bump when shell logic changes. */
-const WEBINK_SHELL = 23;
+const WEBINK_SHELL = 24;
 console.info(
   `%c[webink] shell v${WEBINK_SHELL}`,
   'color:#9dcea0;font-weight:700;font-size:12px',
@@ -940,6 +940,88 @@ function installTouchZones() {
 }
 
 // ---------------------------------------------------------------------------
+// Phone / browser orientation -> CrossInk SETTINGS.orientation
+// 0=Portrait, 1=Landscape CW, 2=Inverted, 3=Landscape CCW
+// ---------------------------------------------------------------------------
+
+/**
+ * Map Screen Orientation API (or viewport) to CrossInk orientation enum.
+ * @returns {number}
+ */
+function mapBrowserOrientationToCrossInk() {
+  const so = screen.orientation;
+  if (so && typeof so.angle === 'number') {
+    // angle: 0 upright, 90 / 270 landscape, 180 upside-down
+    const a = ((so.angle % 360) + 360) % 360;
+    if (a === 0) return 0; // Portrait
+    if (a === 180) return 2; // Inverted
+    if (a === 90) return 3; // Landscape CCW (common primary landscape)
+    if (a === 270) return 1; // Landscape CW
+  }
+  if (so && typeof so.type === 'string') {
+    const t = so.type;
+    if (t === 'portrait-primary') return 0;
+    if (t === 'portrait-secondary') return 2;
+    if (t === 'landscape-primary') return 3;
+    if (t === 'landscape-secondary') return 1;
+  }
+  // Fallback: CSS orientation only (no inverted / CW vs CCW)
+  if (window.matchMedia('(orientation: portrait)').matches) return 0;
+  return 3;
+}
+
+/**
+ * Push browser orientation into the Wasm firmware (queued; applied on next frame).
+ * @param {any} mod
+ */
+function pushOrientationToFirmware(mod) {
+  if (!mod) return;
+  const o = mapBrowserOrientationToCrossInk();
+  try {
+    if (typeof mod._webink_set_device_orientation === 'function') {
+      mod._webink_set_device_orientation(o);
+    } else if (typeof mod.ccall === 'function') {
+      mod.ccall('webink_set_device_orientation', null, ['number'], [o]);
+    }
+  } catch (e) {
+    console.warn('[webink] orientation push failed', e);
+  }
+  // Refit shell aperture after SDL window aspect may change.
+  requestAnimationFrame(() => fitDeviceScreen());
+  setTimeout(() => fitDeviceScreen(), 100);
+  setTimeout(() => fitDeviceScreen(), 400);
+}
+
+function installDeviceOrientationBridge(mod) {
+  let last = -1;
+  const sync = () => {
+    const o = mapBrowserOrientationToCrossInk();
+    if (o === last) return;
+    last = o;
+    console.info('[webink] device orientation -> firmware', o);
+    pushOrientationToFirmware(mod);
+  };
+
+  // Screen Orientation API (Chrome, Android, DevTools device mode, modern Safari)
+  if (screen.orientation && typeof screen.orientation.addEventListener === 'function') {
+    screen.orientation.addEventListener('change', sync);
+  }
+  window.addEventListener('orientationchange', () => {
+    setTimeout(sync, 50);
+    setTimeout(sync, 300);
+  });
+  // Viewport fallback when Screen Orientation API is limited
+  window.addEventListener('resize', () => {
+    // Debounce via rAF through existing fit path; still push enum
+    setTimeout(sync, 100);
+  });
+
+  // Initial apply after firmware has started
+  setTimeout(sync, 200);
+  setTimeout(sync, 800);
+}
+
+// ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
 
@@ -1087,6 +1169,7 @@ async function boot() {
 
   installLibraryUi(Module);
   installTouchZones();
+  installDeviceOrientationBridge(Module);
 
   // Re-apply route after Module is ready (library needs FS).
   applyPage(pageFromHash());

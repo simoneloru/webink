@@ -18,6 +18,10 @@
 extern void setup();
 extern void loop();
 extern HalDisplay display;
+#ifdef __EMSCRIPTEN__
+// Defined in webink_orientation.cpp — applies phone orientation to firmware.
+void webink_poll_device_orientation();
+#endif
 
 namespace {
 
@@ -29,6 +33,9 @@ void frame() {
     SDL_Quit();
     return;
   }
+#ifdef __EMSCRIPTEN__
+  webink_poll_device_orientation();
+#endif
   gpio.beginFrame();
   loop();
   display.presentIfNeeded();
