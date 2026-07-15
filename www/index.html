@@ -877,34 +877,31 @@
   </div>
 
   <div id="overlay"><p id="overlay-msg">Loading CrossInk…</p></div>
-  <!-- Inline bootstrap: if an old SW is still hijacking navigations, clear it. -->
+  <!--
+    If you only see raw JavaScript on this site, an old Service Worker is stuck.
+    Fix: open the site in a private/incognito window, or DevTools → Application
+    → Service Workers → Unregister, then Clear site data, then reload.
+  -->
   <script>
     (function () {
       if (!('serviceWorker' in navigator)) return;
-      // New SW URL forces install even when an old sw.js is stuck.
-      var SW_URL = './sw.js?v=26';
+      // Keep stable URL so existing registrations receive updates.
+      var SW_URL = './sw.js';
       navigator.serviceWorker.getRegistrations().then(function (regs) {
-        var stale = regs.some(function (r) {
-          var u = (r.active && r.active.scriptURL) || (r.waiting && r.waiting.scriptURL) || '';
-          return u.indexOf('sw.js') !== -1 && u.indexOf('v=26') === -1;
-        });
-        if (!stale && regs.length) return;
-        return Promise.all(regs.map(function (r) { return r.unregister(); })).then(function () {
-          if (typeof caches === 'undefined') return;
-          return caches.keys().then(function (keys) {
-            return Promise.all(keys.map(function (k) { return caches.delete(k); }));
-          });
-        }).then(function () {
-          if (stale) location.reload();
-        });
+        return Promise.all(
+          regs.map(function (r) {
+            if (r.update) return r.update().catch(function () {});
+            return null;
+          })
+        );
       }).catch(function () {});
-      // Register the versioned SW after a moment (module app.js also registers).
       setTimeout(function () {
         navigator.serviceWorker.register(SW_URL, { updateViaCache: 'none' }).catch(function () {});
-      }, 2000);
+      }, 1500);
     })();
   </script>
   <script type="module" src="./app.js?v=26"></script>
 </body>
 </html>
+
 
