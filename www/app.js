@@ -3,6 +3,37 @@
  * Pages: #reader | #library | #help
  */
 
+/** Bump when shell logic changes — also used for one-shot SW/cache purge. */
+const WEBINK_SHELL = 22;
+console.info(
+  `%c[webink] shell v${WEBINK_SHELL}`,
+  'color:#9dcea0;font-weight:700;font-size:12px',
+);
+
+// If an old Service Worker still serves a stale app.js, nuke caches once and reload.
+// Stack traces at printErr @ app.js:924 mean pre-v22 code.
+(function bustStaleShellOnce() {
+  const key = `webink-shell-${WEBINK_SHELL}`;
+  try {
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+  } catch {
+    return;
+  }
+  if (!('serviceWorker' in navigator)) return;
+  Promise.resolve()
+    .then(async () => {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      const keys = (await caches.keys?.()) || [];
+      if (regs.length === 0 && keys.length === 0) return;
+      await Promise.all(regs.map((r) => r.unregister()));
+      await Promise.all(keys.map((k) => caches.delete(k)));
+      console.info('[webink] cleared stale SW/cache → reloading');
+      location.reload();
+    })
+    .catch(() => {});
+})();
+
 const statusEl = document.getElementById('status');
 const overlay = document.getElementById('overlay');
 const overlayMsg = document.getElementById('overlay-msg');
@@ -44,45 +75,236 @@ const PAGE_TITLES = {
   help: 'Help · CrossInk (Web)',
 };
 
-const PANEL_W = 800;
-const PANEL_H = 480;
+/**
+ * Physical e-ink panel buffer is 800×480, but CrossInk's *logical* window
+ * depends on Settings → Orientation:
+ *   Portrait (default)  → SDL window 480×800  (3:5, tall)
+ *   Landscape           → SDL window 800×480  (5:3, wide)
+ *
+ * The shell MUST match that window aspect. Forcing 800×480 while firmware is
+ * in Portrait was stretching the canvas into a “fake 16:9” strip.
+ */
+const PANEL_NATIVE_W = 800;
+const PANEL_NATIVE_H = 480;
+/** CrossInk default orientation is Portrait → logical 480×800 */
+const DEFAULT_LOGIC_W = PANEL_NATIVE_H; // 480
+const DEFAULT_LOGIC_H = PANEL_NATIVE_W; // 800
 const BOOKS_DIR = '/fs_/books';
 
+const stageEl = document.getElementById('stage');
+const frontBarEl = document.getElementById('front-bar');
+
 // ---------------------------------------------------------------------------
-// Layout: fit e-ink panel
+// Layout — match SDL logical window aspect, scale uniformly to fill stage
 // ---------------------------------------------------------------------------
+
+function cssPx(varName, fallback) {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Logical window size from the live canvas (SDL), falling back to Portrait default.
+ * Uses the ratio of canvas.width/height (HiDPI-safe).
+ */
+function getLogicalDisplaySize() {
+  const bw = canvas?.width || 0;
+  const bh = canvas?.height || 0;
+  if (bw >= 16 && bh >= 16) {
+    // Normalize to the nearer native pair (480×800 or 800×480) for clean integers.
+    const aspect = bw / bh;
+    if (aspect < 1) {
+      // Portrait-ish
+      return { logicW: DEFAULT_LOGIC_W, logicH: DEFAULT_LOGIC_H, aspect };
+    }
+    return { logicW: PANEL_NATIVE_W, logicH: PANEL_NATIVE_H, aspect };
+  }
+  return {
+    logicW: DEFAULT_LOGIC_W,
+    logicH: DEFAULT_LOGIC_H,
+    aspect: DEFAULT_LOGIC_W / DEFAULT_LOGIC_H,
+  };
+}
+
+/** Largest box with given aspect (w/h) inside maxW×maxH. */
+function fitAspect(maxW, maxH, aspect) {
+  maxW = Math.max(1, Math.floor(maxW));
+  maxH = Math.max(1, Math.floor(maxH));
+  let w;
+  let h;
+  if (maxW / maxH > aspect) {
+    h = maxH;
+    w = Math.max(1, Math.floor(h * aspect));
+  } else {
+    w = maxW;
+    h = Math.max(1, Math.floor(w / aspect));
+  }
+  if (w > maxW) {
+    w = maxW;
+    h = Math.max(1, Math.floor(w / aspect));
+  }
+  if (h > maxH) {
+    h = maxH;
+    w = Math.max(1, Math.floor(h * aspect));
+  }
+  return { w, h };
+}
+
+function getViewportBudget() {
+  const header = document.querySelector('header');
+  const headerH = header ? header.getBoundingClientRect().height : 0;
+  const vv = window.visualViewport;
+  const vw = Math.max(
+    1,
+    Math.floor(vv?.width || document.documentElement.clientWidth || window.innerWidth),
+  );
+  const vh = Math.max(
+    1,
+    Math.floor(vv?.height || document.documentElement.clientHeight || window.innerHeight),
+  );
+
+  const bodyStyle = getComputedStyle(document.body);
+  const padX =
+    (parseFloat(bodyStyle.paddingLeft) || 0) + (parseFloat(bodyStyle.paddingRight) || 0);
+  const padY =
+    (parseFloat(bodyStyle.paddingTop) || 0) + (parseFloat(bodyStyle.paddingBottom) || 0);
+
+  return {
+    freeW: Math.max(1, Math.floor(vw - padX)),
+    freeH: Math.max(1, Math.floor(vh - padY - headerH)),
+  };
+}
 
 function fitDeviceScreen() {
-  if (!canvas || !canvasWrap) return;
+  if (!canvas || !canvasWrap || !stageEl) return;
   if (currentPage !== 'reader') return;
-  const availW = canvasWrap.clientWidth;
-  const availH = canvasWrap.clientHeight;
-  if (availW < 2 || availH < 2) return;
 
-  const scale = Math.min(availW / PANEL_W, availH / PANEL_H);
-  const w = Math.max(1, Math.floor(PANEL_W * scale));
-  const h = Math.max(1, Math.floor(PANEL_H * scale));
+  const { freeW, freeH } = getViewportBudget();
+  if (freeW < 32 || freeH < 32) return;
 
-  canvas.style.width = `${w}px`;
-  canvas.style.height = `${h}px`;
-  canvas.style.setProperty('--fit-w', `${w}px`);
-  canvas.style.setProperty('--fit-h', `${h}px`);
+  stageEl.style.width = '100%';
+  stageEl.style.height = `${freeH}px`;
+  stageEl.style.minHeight = `${freeH}px`;
+  if (viewReader) viewReader.style.minHeight = `${freeH}px`;
+
+  const sideW = cssPx('--side-w', 30);
+  const frontH = cssPx('--front-h', 40);
+  const gap = cssPx('--gap', 3);
+  const pad = gap;
+
+  const stageStyle = getComputedStyle(stageEl);
+  const stageGap = parseFloat(stageStyle.rowGap || stageStyle.gap) || gap;
+  const stagePadX =
+    (parseFloat(stageStyle.paddingLeft) || 0) + (parseFloat(stageStyle.paddingRight) || 0);
+  const stagePadY =
+    (parseFloat(stageStyle.paddingTop) || 0) + (parseFloat(stageStyle.paddingBottom) || 0);
+
+  const hintEl = stageEl.querySelector('.hint');
+  let hintReserve = 0;
+  if (hintEl && getComputedStyle(hintEl).display !== 'none') {
+    hintReserve = Math.max(hintEl.offsetHeight, 14) + stageGap;
+  }
+
+  const innerW = Math.max(1, freeW - stagePadX);
+  const innerH = Math.max(1, freeH - stagePadY - hintReserve);
+
+  const chromeW = pad * 2 + sideW * 2 + gap * 2;
+  const chromeH = pad * 2;
+  const maxScreenW = Math.max(1, innerW - chromeW);
+  const maxScreenH = Math.max(1, innerH - chromeH - gap - frontH);
+
+  const { logicW, logicH, aspect } = getLogicalDisplaySize();
+  const { w: screenW, h: screenH } = fitAspect(maxScreenW, maxScreenH, aspect);
+  const deviceOuterW = chromeW + screenW;
+
+  const root = document.documentElement;
+  root.style.setProperty('--screen-w', `${screenW}px`);
+  root.style.setProperty('--screen-h', `${screenH}px`);
+  root.style.setProperty('--front-bar-w', `${deviceOuterW}px`);
+
+  // Aperture matches firmware logical window (portrait or landscape).
+  canvasWrap.style.setProperty('width', `${screenW}px`, 'important');
+  canvasWrap.style.setProperty('height', `${screenH}px`, 'important');
+  canvasWrap.style.removeProperty('min-width');
+  canvasWrap.style.removeProperty('min-height');
+  canvasWrap.style.removeProperty('max-width');
+  canvasWrap.style.removeProperty('max-height');
+  canvasWrap.style.removeProperty('aspect-ratio');
+
+  if (frontBarEl) frontBarEl.style.width = `${deviceOuterW}px`;
+
+  stageEl.classList.remove('is-screen-portrait', 'is-portrait-rotate');
+  document.body.classList.remove('screen-portrait', 'shell-portrait-rotate');
+  stageEl.classList.toggle('is-logic-portrait', logicH > logicW);
+  document.body.classList.toggle('logic-portrait', logicH > logicW);
+
+  // Fill aperture exactly — no CSS rotate; SDL already draws the right orientation.
+  canvas.style.setProperty('width', `${screenW}px`, 'important');
+  canvas.style.setProperty('height', `${screenH}px`, 'important');
+  canvas.style.setProperty('max-width', 'none', 'important');
+  canvas.style.setProperty('max-height', 'none', 'important');
+  canvas.style.setProperty('transform', 'none', 'important');
+
+  canvas.dataset.screenW = String(screenW);
+  canvas.dataset.screenH = String(screenH);
+  canvas.dataset.logicW = String(logicW);
+  canvas.dataset.logicH = String(logicH);
+  canvas.dataset.aspect = aspect.toFixed(3);
+  canvas.dataset.buffer = `${canvas.width}x${canvas.height}`;
 }
 
 function installFitObserver() {
-  fitDeviceScreen();
-  if (typeof ResizeObserver !== 'undefined' && canvasWrap) {
-    const ro = new ResizeObserver(() => fitDeviceScreen());
-    ro.observe(canvasWrap);
+  let fitScheduled = false;
+  const run = () => {
+    if (fitScheduled) return;
+    fitScheduled = true;
+    requestAnimationFrame(() => {
+      fitScheduled = false;
+      fitDeviceScreen();
+    });
+  };
+  const runAfterRotate = () => {
+    run();
+    setTimeout(run, 50);
+    setTimeout(run, 250);
+    setTimeout(run, 600);
+  };
+
+  run();
+  if (typeof ResizeObserver !== 'undefined') {
+    if (stageEl) new ResizeObserver(run).observe(stageEl);
+    // SDL may change canvas buffer size when orientation changes in firmware.
+    if (canvas) {
+      new ResizeObserver(run).observe(canvas);
+    }
   }
-  window.addEventListener('resize', fitDeviceScreen);
-  window.addEventListener('orientationchange', () => {
-    setTimeout(fitDeviceScreen, 50);
-    setTimeout(fitDeviceScreen, 250);
-  });
+  window.addEventListener('resize', run);
+  window.addEventListener('orientationchange', runAfterRotate);
+  if (screen.orientation?.addEventListener) {
+    screen.orientation.addEventListener('change', runAfterRotate);
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', run);
+  }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') fitDeviceScreen();
+    if (document.visibilityState === 'visible') runAfterRotate();
   });
+
+  if (canvas && typeof MutationObserver !== 'undefined') {
+    let scheduled = false;
+    new MutationObserver(() => {
+      if (scheduled || currentPage !== 'reader') return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        fitDeviceScreen();
+      });
+    }).observe(canvas, {
+      attributes: true,
+      attributeFilter: ['style', 'width', 'height'],
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +452,45 @@ function ensureDir(FS, path) {
   }
 }
 
+/**
+ * Ensure a JSON state file is present and parseable.
+ * Rewrites missing, empty, whitespace-only, or clearly invalid files.
+ * (IDBFS often restores a 0-byte recent.json from a previous failed save.)
+ */
+function ensureValidJsonFile(FS, path, contents) {
+  let ok = false;
+  try {
+    const raw = FS.readFile(path, { encoding: 'utf8' });
+    const t = String(raw || '').replace(/^\uFEFF/, '').trim();
+    if (t.length > 0 && t.startsWith('{')) {
+      // Prefer files that look like our store shape; rewrite bare {} if needed.
+      ok = t.includes('"books"') || path.indexOf('recent.json') < 0;
+    }
+  } catch {
+    ok = false;
+  }
+  if (ok) return false;
+  try {
+    ensureDir(FS, path.replace(/\/[^/]+$/, '') || '/');
+    FS.writeFile(path, contents);
+    console.log('[webink] seeded', path);
+    return true;
+  } catch (e) {
+    console.warn('[webink] could not seed', path, e);
+    return false;
+  }
+}
+
+/**
+ * Seed minimal CrossInk state so first launch doesn't log JSON EmptyInput.
+ */
+function seedDefaultState(FS) {
+  ensureDir(FS, '/fs_/.crosspoint');
+  ensureDir(FS, '/fs_/.crosspoint/synced_stats');
+  // RecentBooksStore::fromJson expects { "books": [ ... ] }
+  ensureValidJsonFile(FS, '/fs_/.crosspoint/recent.json', '{"books":[]}\n');
+}
+
 async function mountVirtualSd(mod) {
   const { FS } = mod;
   ensureDir(FS, '/fs_');
@@ -250,6 +511,13 @@ async function mountVirtualSd(mod) {
   ensureDir(FS, '/fs_/.crosspoint');
   ensureDir(FS, '/fs_/.fonts');
   ensureDir(FS, '/fs_/fonts');
+  seedDefaultState(FS);
+  // Persist seeds so next load doesn't re-hit EmptyInput on empty files.
+  try {
+    await syncfs(mod, false);
+  } catch {
+    /* optional */
+  }
 }
 
 function sanitizeName(name) {
@@ -637,22 +905,42 @@ function installHardwareButtons() {
 }
 
 function installTouchZones() {
-  const mapKey = (clientX, clientY) => {
+  /**
+   * Map a pointer to panel UV in canvas local space (0..1).
+   * Prefer offsetX/Y so CSS rotate(90deg) on the shell still maps correctly.
+   */
+  const pointerToUv = (e) => {
+    const cw = canvas.clientWidth || 1;
+    const ch = canvas.clientHeight || 1;
+    if (typeof e.offsetX === 'number' && e.target === canvas) {
+      return {
+        x: Math.min(1, Math.max(0, e.offsetX / cw)),
+        y: Math.min(1, Math.max(0, e.offsetY / ch)),
+      };
+    }
+    // Fallback (unrotated only is accurate)
     const r = canvas.getBoundingClientRect();
-    const x = (clientX - r.left) / r.width;
-    const y = (clientY - r.top) / r.height;
+    return {
+      x: Math.min(1, Math.max(0, (e.clientX - r.left) / Math.max(1, r.width))),
+      y: Math.min(1, Math.max(0, (e.clientY - r.top) / Math.max(1, r.height))),
+    };
+  };
+
+  const mapKeyFromUv = (x, y) => {
     if (y < 0.15) return { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38 };
     if (y > 0.85) return { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40 };
     if (x < 0.28) return { key: 'ArrowLeft', code: 'ArrowLeft', keyCode: 37 };
     if (x > 0.72) return { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39 };
     return { key: 'Enter', code: 'Enter', keyCode: 13 };
   };
+
   let longTimer = null;
   let lastKey = null;
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     canvas.focus({ preventScroll: true });
-    const k = mapKey(e.clientX, e.clientY);
+    const { x, y } = pointerToUv(e);
+    const k = mapKeyFromUv(x, y);
     lastKey = k;
     fireKey('keydown', k);
     longTimer = setTimeout(() => {
@@ -684,8 +972,13 @@ async function boot() {
   installHardwareButtons();
   installFitObserver();
 
+  // Register SW after a tick so a just-unregistered worker is not immediately reattached mid-bust.
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register(new URL('./sw.js', import.meta.url)).catch(() => {});
+    setTimeout(() => {
+      navigator.serviceWorker
+        .register(new URL('./sw.js', import.meta.url), { updateViaCache: 'none' })
+        .catch(() => {});
+    }, 1500);
   }
 
   setOverlay('Downloading CrossInk…');
@@ -702,16 +995,73 @@ async function boot() {
     return;
   }
 
+  // Emscripten often calls print/printErr per chunk or even per character
+  // (put_char). Buffer until newline so log-level filters can match full lines.
+  let crossinkOutBuf = '';
+  let crossinkErrBuf = '';
+
+  const handleCrossinkLine = (line, asErr) => {
+    const msg = line.replace(/\r$/, '').trimEnd();
+    if (!msg) return;
+
+    // Noise / expected first-boot
+    if (msg.includes('still waiting on run dependencies')) return;
+    if (msg.includes('emscripten_set_main_loop_timing')) return;
+    if (msg.includes('[SIM] open failed:') && (msg.includes('errno=44') || msg.includes('No such file')))
+      return;
+    if (msg.includes('recent.json') && (msg.includes('EmptyInput') || msg.includes('(empty)'))) {
+      console.warn('[crossink]', msg);
+      return;
+    }
+
+    // Firmware level tags (even when delivered via printErr)
+    if (msg.includes('[DBG]')) {
+      console.debug('[crossink]', msg);
+      return;
+    }
+    if (msg.includes('[INF]')) {
+      console.log('[crossink]', msg);
+      return;
+    }
+    if (msg.includes('[WRN]') || msg.includes('[WARN]')) {
+      console.warn('[crossink]', msg);
+      return;
+    }
+    if (msg.includes('[ERR]') || msg.includes('[ERROR]')) {
+      console.error('[crossink]', msg);
+      return;
+    }
+
+    // Untagged: stdout → log, stderr → warn (not error spam)
+    if (asErr) console.warn('[crossink]', msg);
+    else console.log('[crossink]', msg);
+  };
+
+  const feedCrossink = (chunk, isErr) => {
+    const text = Array.isArray(chunk) ? chunk.map(String).join('') : String(chunk ?? '');
+    if (isErr) {
+      crossinkErrBuf += text;
+      let i;
+      while ((i = crossinkErrBuf.indexOf('\n')) >= 0) {
+        handleCrossinkLine(crossinkErrBuf.slice(0, i), true);
+        crossinkErrBuf = crossinkErrBuf.slice(i + 1);
+      }
+    } else {
+      crossinkOutBuf += text;
+      let i;
+      while ((i = crossinkOutBuf.indexOf('\n')) >= 0) {
+        handleCrossinkLine(crossinkOutBuf.slice(0, i), false);
+        crossinkOutBuf = crossinkOutBuf.slice(i + 1);
+      }
+    }
+  };
+
   try {
     Module = await createCrossInkModule({
       canvas,
       locateFile: (path) => new URL(path, import.meta.url).href,
-      print: (...a) => console.log('[crossink]', ...a),
-      printErr: (...a) => {
-        const msg = a.join(' ');
-        if (msg.includes('still waiting on run dependencies')) return;
-        console.error('[crossink]', ...a);
-      },
+      print: (...a) => feedCrossink(a.length === 1 ? a[0] : a.join(''), false),
+      printErr: (...a) => feedCrossink(a.length === 1 ? a[0] : a.join(''), true),
       preRun: [
         (m) => {
           m.ENV.CROSSPOINT_SIM_SD = '/fs_';
@@ -747,9 +1097,12 @@ async function boot() {
     if (typeof Module.callMain === 'function') Module.callMain([]);
     else if (typeof Module._main === 'function') Module._main();
     setStatus('Running');
+    // SDL sets canvas buffer size during/after first frames — re-fit aspect then.
     requestAnimationFrame(fitDeviceScreen);
     setTimeout(fitDeviceScreen, 100);
-    setTimeout(fitDeviceScreen, 500);
+    setTimeout(fitDeviceScreen, 400);
+    setTimeout(fitDeviceScreen, 1000);
+    setTimeout(fitDeviceScreen, 2000);
   } catch (e) {
     console.error(e);
     setStatus(`Start failed: ${e.message || e}`, 'err');

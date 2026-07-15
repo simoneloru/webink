@@ -1,6 +1,6 @@
 /* Offline cache only — single-threaded Wasm no longer needs COOP/COEP. */
 
-const CACHE = 'crossink-web-v10-st';
+const CACHE = 'crossink-web-v22-st';
 const PRECACHE = [
   './',
   './index.html',
@@ -22,12 +22,12 @@ self.addEventListener('install', (event) => {
           try {
             await cache.add(url);
           } catch {
-            /* optional */
+            /* optional (wasm may be large / missing in pure shell deploys) */
           }
-        })
+        }),
       );
       await self.skipWaiting();
-    })()
+    })(),
   );
 });
 
@@ -37,7 +37,7 @@ self.addEventListener('activate', (event) => {
       const keys = await caches.keys();
       await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)));
       await self.clients.claim();
-    })()
+    })(),
   );
 });
 
@@ -47,9 +47,39 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
+  // Shell files: always prefer network so log fixes / layout land without manual SW nuking.
+  const path = url.pathname;
+  const isShell =
+    path.endsWith('/') ||
+    path.endsWith('/index.html') ||
+    path.endsWith('/app.js') ||
+    path.endsWith('/sw.js');
+
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
+      if (isShell) {
+        try {
+          const net = await fetch(req, { cache: 'no-store' });
+          if (net.ok) {
+            try {
+              // Cache without query string variants for offline.
+              const cacheKey = path.endsWith('/app.js')
+                ? new Request(new URL('./app.js', self.registration.scope).href)
+                : req;
+              cache.put(cacheKey, net.clone());
+            } catch {
+              /* ignore */
+            }
+          }
+          return net;
+        } catch {
+          const hit = (await cache.match(req)) || (await cache.match('./app.js')) || (await cache.match('./index.html'));
+          if (hit) return hit;
+          return Response.error();
+        }
+      }
+
       try {
         const net = await fetch(req);
         if (net.ok) {
@@ -69,6 +99,6 @@ self.addEventListener('fetch', (event) => {
         }
         return Response.error();
       }
-    })()
+    })(),
   );
 });
