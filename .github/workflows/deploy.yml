@@ -1,17 +1,11 @@
 name: Build CrossInk Wasm & Deploy Pages
 
-# Deploy only on version tags (and manual runs).
-# One job packages + deploys (avoids deploy-pages BlobNotFound across jobs).
-# Full Emscripten rebuild only when C++/patches change; else reuse live Wasm.
+# Deploy only on version tags (and manual runs). Always full Wasm build for
+# reliability (shell-only reuse can be re-added once ST Wasm is stably live).
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      force_full_build:
-        description: "Force a full Wasm rebuild"
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -20,7 +14,7 @@ permissions:
 
 concurrency:
   group: pages-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -32,96 +26,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           submodules: recursive
 
-      - name: Plan build mode
-        id: plan
+      - name: Version label
+        id: ver
         run: |
-          set -euo pipefail
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION="${GITHUB_REF_NAME}"
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
-            VERSION="manual-$(git rev-parse --short HEAD)"
+            echo "version=manual-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-          FORCE="${{ github.event.inputs.force_full_build || 'false' }}"
-          # workflow_dispatch default true; tag pushes default to smart plan
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${FORCE}" == "true" ]]; then
-            echo "need_wasm=true" >> "$GITHUB_OUTPUT"
-            echo "reason=force_full_build" >> "$GITHUB_OUTPUT"
-            echo "Plan: FULL wasm (forced)"
-            exit 0
-          fi
-
-          PREV=""
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            PREV="$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)"
-          else
-            PREV="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
-          fi
-
-          if [[ -z "${PREV}" ]]; then
-            echo "need_wasm=true" >> "$GITHUB_OUTPUT"
-            echo "reason=no_previous_tag" >> "$GITHUB_OUTPUT"
-            echo "Plan: FULL wasm (no previous tag)"
-            exit 0
-          fi
-
-          echo "Comparing ${PREV}..HEAD"
-          mapfile -t CHANGED < <(git diff --name-only "${PREV}" HEAD || true)
-          printf '  %s\n' "${CHANGED[@]:-}"
-
-          NEED=false
-          for f in "${CHANGED[@]:-}"; do
-            case "${f}" in
-              wasm/*|vendor/*|scripts/patch_*.sh|scripts/build.sh|scripts/patch_simulator.sh|scripts/patch_crossink_emscripten.sh)
-                NEED=true
-                break
-                ;;
-            esac
-          done
-
-          # Also rebuild if we cannot fetch live Wasm later (handled at obtain step)
-          if [[ "${NEED}" == "true" ]]; then
-            echo "need_wasm=true" >> "$GITHUB_OUTPUT"
-            echo "reason=cpp_or_build_paths_changed" >> "$GITHUB_OUTPUT"
-            echo "Plan: FULL wasm"
-          else
-            echo "need_wasm=false" >> "$GITHUB_OUTPUT"
-            echo "reason=shell_only_since_${PREV}" >> "$GITHUB_OUTPUT"
-            echo "Plan: SHELL-only (reuse Wasm)"
-          fi
+          echo "Building version: $(sed -n 's/version=//p' "$GITHUB_OUTPUT")"
 
       - name: Install system packages
-        if: steps.plan.outputs.need_wasm == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build python3 python3-pip python3-yaml ccache
 
       - name: Setup ccache
-        if: steps.plan.outputs.need_wasm == 'true'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: emscripten-${{ runner.os }}-wasm
+          key: emscripten-${{ runner.os }}-wasm-st
           max-size: 2G
 
       - name: Setup Emscripten
-        if: steps.plan.outputs.need_wasm == 'true'
         uses: mymindstorm/setup-emsdk@v14
         with:
           version: 4.0.6
           actions-cache-folder: emsdk-cache
 
-      # Note: do NOT cache wasm/build — emsdk lives under a new /tmp path each
-      # run, so a restored CMakeCache points at missing emcc and configure fails.
-      # ccache alone is enough for incremental compile speed.
-
       - name: Patch + i18n + full Wasm build
-        if: steps.plan.outputs.need_wasm == 'true'
         env:
-          WEBINK_VERSION: ${{ steps.plan.outputs.version }}
+          WEBINK_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
           python3 scripts/gen_icons.py
@@ -133,7 +70,7 @@ jobs:
             python3 scripts/build_web.py || true
             test -f lib/I18n/I18nKeys.h
           )
-          # Always clean configure dir so toolchain paths match this runner's emsdk
+          # Never reuse wasm/build cache: emsdk path is under a new /tmp each run
           rm -rf wasm/build
           emcmake cmake -S wasm -B wasm/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -142,30 +79,13 @@ jobs:
             -DWEBINK_VERSION="${WEBINK_VERSION}"
           cmake --build wasm/build --parallel
           test -f www/crossink.js && test -f www/crossink.wasm
+          # Single-thread build must not require SharedArrayBuffer
+          if grep -q SharedArrayBuffer www/crossink.js; then
+            echo "ERROR: build still references SharedArrayBuffer (pthread?)"
+            exit 1
+          fi
           ls -lh www/crossink.js www/crossink.wasm
           ccache -s || true
-
-      - name: Reuse live Wasm (shell-only)
-        if: steps.plan.outputs.need_wasm == 'false'
-        env:
-          PAGES_BASE: https://simoneloru.github.io/webink
-        run: |
-          set -euo pipefail
-          mkdir -p www
-          if ! curl -fL --retry 3 -o www/crossink.js "${PAGES_BASE}/crossink.js"; then
-            echo "Live crossink.js missing — forcing failure so you re-run with full build"
-            exit 1
-          fi
-          if ! curl -fL --retry 3 -o www/crossink.wasm "${PAGES_BASE}/crossink.wasm"; then
-            echo "Live crossink.wasm missing — re-run with force_full_build"
-            exit 1
-          fi
-          # Sanity: not an HTML 404 page
-          if head -c 20 www/crossink.js | grep -qi '<!DOCTYPE\|<html'; then
-            echo "Downloaded JS looks like HTML 404"
-            exit 1
-          fi
-          ls -lh www/crossink.js www/crossink.wasm
 
       - name: Ensure icons
         run: |
@@ -178,9 +98,7 @@ jobs:
 
       - name: Assemble _site
         env:
-          VERSION: ${{ steps.plan.outputs.version }}
-          NEED_WASM: ${{ steps.plan.outputs.need_wasm }}
-          REASON: ${{ steps.plan.outputs.reason }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
           rm -rf _site
@@ -192,18 +110,25 @@ jobs:
           test -f _site/index.html
           test -f _site/app.js
           test -f _site/sw.js
+          # Sanity: compact chrome + no COI gate (single-thread)
+          grep -q 'front-h' _site/index.html
+          if grep -q ensureCrossOriginIsolated _site/app.js; then
+            echo "ERROR: app.js still gates on COI (should be single-thread)"
+            exit 1
+          fi
+          if grep -q SharedArrayBuffer _site/crossink.js; then
+            echo "ERROR: crossink.js requires SharedArrayBuffer"
+            exit 1
+          fi
           {
             echo "version=${VERSION}"
             echo "ref=${GITHUB_REF}"
             echo "sha=${GITHUB_SHA}"
-            echo "wasm_build=${NEED_WASM}"
-            echo "plan=${REASON}"
+            echo "wasm_build=true"
+            echo "plan=always_full"
             echo "built=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           } > _site/build-info.txt
           touch _site/.nojekyll
-          # Prove COI bootstrap is in the deploy
-          grep -q ensureCrossOriginIsolated _site/app.js
-          grep -q credentialless _site/sw.js || grep -q Cross-Origin-Embedder-Policy _site/sw.js
           cat _site/build-info.txt
           ls -lh _site/crossink.js _site/crossink.wasm
 
