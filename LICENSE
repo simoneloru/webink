@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 WebInk contributors
+Copyright (c) 2026 Simone Loru and WebInk contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -20,4 +20,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-CrossInk and crosspoint-simulator remain under their upstream MIT licenses.
+----------------------------------------------------------------------------
+Third-party components
+
+This project vendors and links software from:
+
+  - CrossInk (https://github.com/uxjulia/CrossInk) — MIT
+  - crosspoint-simulator (https://github.com/uxjulia/crosspoint-simulator) — MIT
+  - CrossPoint Reader and related dependencies as used by CrossInk — see their
+    respective repositories for full license texts
+
+Those projects remain under their upstream licenses. The MIT license above
+covers the WebInk shell, build system, and original files in this repository.
