@@ -67,5 +67,37 @@ if "vSemaphoreDelete" not in t:
     )
     print("patched freertos/semphr.h")
 
+# Arduino delay: blocking sleep freezes the browser event loop under Emscripten
+# and prevents cooperative FreeRTOS tasks / SDL present from running.
+p = sim / "Arduino.h"
+t = p.read_text()
+if "emscripten_sleep" not in t:
+    old = """inline void delay(unsigned long ms) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+inline void yield() { std::this_thread::yield(); }"""
+    new = """inline void delay(unsigned long ms) {
+#if defined(__EMSCRIPTEN__)
+  // ASYNCIFY: yield to the browser (main loop, IDBFS, SDL present).
+  emscripten_sleep(ms > 0 ? static_cast<int>(ms) : 0);
+#else
+  std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+#endif
+}
+inline void yield() {
+#if defined(__EMSCRIPTEN__)
+  emscripten_sleep(0);
+#else
+  std::this_thread::yield();
+#endif
+}"""
+    if old not in t:
+        print("WARN: Arduino.h delay pattern not found")
+    else:
+        if '#include <emscripten.h>' not in t:
+            t = t.replace("#pragma once\n", "#pragma once\n#ifdef __EMSCRIPTEN__\n#include <emscripten.h>\n#endif\n", 1)
+        p.write_text(t.replace(old, new, 1))
+        print("patched Arduino.h delay/yield for Emscripten")
+
 print("done")
 PY

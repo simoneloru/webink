@@ -223,6 +223,8 @@ if(EMSCRIPTEN)
     "SHELL:-sINITIAL_MEMORY=134217728"
     "SHELL:-sSTACK_SIZE=2097152"
     "SHELL:-sFORCE_FILESYSTEM=1"
+    # IDBFS is not in the default FS set — required for IndexedDB persistence.
+    "SHELL:-lidbfs.js"
     "SHELL:-sASSERTIONS=1"
     "SHELL:-sEXIT_RUNTIME=0"
     "SHELL:-sMODULARIZE=1"

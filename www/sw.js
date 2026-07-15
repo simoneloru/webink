@@ -1,6 +1,6 @@
 /* Offline cache only — single-threaded Wasm no longer needs COOP/COEP. */
 
-const CACHE = 'crossink-web-v4-st';
+const CACHE = 'crossink-web-v10-st';
 const PRECACHE = [
   './',
   './index.html',
