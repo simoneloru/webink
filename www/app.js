@@ -1,6 +1,6 @@
 /**
- * WebInk shell — mounts CrossInk Wasm, virtual SD (IDBFS), local EPUB import,
- * and X4-like on-screen controls that inject the same keys as the desktop sim.
+ * WebInk shell — mounts CrossInk Wasm after cross-origin isolation is ready
+ * (required for pthread SharedArrayBuffer on GitHub Pages).
  */
 
 const statusEl = document.getElementById('status');
@@ -22,6 +22,66 @@ function setOverlay(msg) {
   }
   overlayMsg.textContent = msg;
   overlay.classList.remove('hidden');
+}
+
+/**
+ * Pthread builds need SharedArrayBuffer → crossOriginIsolated.
+ * On GitHub Pages only a controlling service worker can inject COOP/COEP.
+ */
+async function ensureCrossOriginIsolated() {
+  if (window.crossOriginIsolated) {
+    return true;
+  }
+
+  if (!('serviceWorker' in navigator)) {
+    setOverlay(
+      'This browser has no service workers. CrossInk Web needs them for multi-threaded Wasm on GitHub Pages. Try Chrome/Firefox, or use a local server with COOP/COEP headers.'
+    );
+    setStatus('No service worker');
+    return false;
+  }
+
+  setOverlay('Enabling secure context for Wasm threads…');
+  setStatus('Registering service worker…');
+
+  try {
+    const reg = await navigator.serviceWorker.register(new URL('./sw.js', import.meta.url), {
+      scope: './',
+      updateViaCache: 'none',
+    });
+    await reg.update().catch(() => {});
+    await navigator.serviceWorker.ready;
+
+    // First visit: SW may not control this page yet → reload once under SW.
+    const reloaded = sessionStorage.getItem('webink-coi-reload') === '1';
+    if (!navigator.serviceWorker.controller || !window.crossOriginIsolated) {
+      if (!reloaded) {
+        sessionStorage.setItem('webink-coi-reload', '1');
+        setStatus('Reloading for thread support…');
+        // Give claim() a tick
+        await new Promise((r) => setTimeout(r, 150));
+        location.reload();
+        return false;
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    setOverlay(`Service worker failed: ${e.message || e}`);
+    setStatus('SW failed');
+    return false;
+  }
+
+  if (!window.crossOriginIsolated) {
+    setOverlay(
+      'Still not cross-origin isolated (SharedArrayBuffer unavailable). Hard-refresh (Ctrl/Cmd+Shift+R), or open in a private window once so the new service worker can take control.'
+    );
+    setStatus('Not isolated — see message');
+    console.error('crossOriginIsolated=false; typeof SharedArrayBuffer=', typeof SharedArrayBuffer);
+    return false;
+  }
+
+  sessionStorage.removeItem('webink-coi-reload');
+  return true;
 }
 
 function syncfs(Module, populate) {
@@ -66,11 +126,6 @@ async function importEpub(Module, file) {
   return { path, name, bytes: buf.byteLength };
 }
 
-/**
- * Fire a key event Emscripten/SDL is likely to accept.
- * Synthetic events are not "trusted", but SDL's browser backend still maps them
- * when key/code/keyCode are set and the event hits window.
- */
 function fireKey(type, { key, code, keyCode }) {
   const init = {
     key,
@@ -83,9 +138,7 @@ function fireKey(type, { key, code, keyCode }) {
     composed: true,
     view: window,
   };
-  const ev = new KeyboardEvent(type, init);
-  // Some engines ignore non-trusted events on canvas only; hit window + document.
-  window.dispatchEvent(ev);
+  window.dispatchEvent(new KeyboardEvent(type, init));
   document.dispatchEvent(new KeyboardEvent(type, init));
   if (document.activeElement !== canvas) {
     try {
@@ -96,7 +149,6 @@ function fireKey(type, { key, code, keyCode }) {
   }
 }
 
-/** Hardware chrome: press/hold like physical buttons. */
 function installHardwareButtons() {
   const buttons = document.querySelectorAll('.hw-btn[data-key]');
 
@@ -128,20 +180,16 @@ function installHardwareButtons() {
     });
     btn.addEventListener('pointercancel', () => release(btn));
     btn.addEventListener('pointerleave', (e) => {
-      // Only release if we lost capture / left while held
       if (btn.classList.contains('is-down') && e.buttons === 0) release(btn);
     });
-    // Avoid double-firing from synthetic click after pointer
     btn.addEventListener('click', (e) => e.preventDefault());
   }
 
-  // Release all if window blurs
   window.addEventListener('blur', () => {
     for (const btn of buttons) release(btn);
   });
 }
 
-/** Optional canvas edge zones (secondary to chrome buttons). */
 function installTouchZones() {
   const mapKey = (clientX, clientY) => {
     const r = canvas.getBoundingClientRect();
@@ -185,10 +233,14 @@ function installTouchZones() {
 }
 
 async function boot() {
+  installHardwareButtons();
+
+  // Do not import/start Wasm until SAB is available.
+  const ok = await ensureCrossOriginIsolated();
+  if (!ok) return;
+
   setOverlay('Downloading CrossInk…');
   setStatus('Downloading…');
-
-  installHardwareButtons();
 
   let createCrossInkModule;
   try {
@@ -196,24 +248,35 @@ async function boot() {
     createCrossInkModule = mod.default ?? mod.createCrossInkModule;
   } catch (e) {
     console.error(e);
-    setOverlay(
-      'crossink.js not found. Build first: ./scripts/build.sh (or wait for CI).'
-    );
+    setOverlay('crossink.js not found. Build first or wait for deploy.');
     setStatus('Build missing');
     return;
   }
 
-  const Module = await createCrossInkModule({
-    canvas,
-    locateFile: (path) => new URL(path, import.meta.url).href,
-    print: (...a) => console.log('[crossink]', ...a),
-    printErr: (...a) => console.error('[crossink]', ...a),
-    preRun: [
-      (mod) => {
-        mod.ENV.CROSSPOINT_SIM_SD = '/fs_';
+  let Module;
+  try {
+    Module = await createCrossInkModule({
+      canvas,
+      locateFile: (path) => new URL(path, import.meta.url).href,
+      print: (...a) => console.log('[crossink]', ...a),
+      printErr: (...a) => {
+        // Filter noisy “still waiting on run dependencies” once isolated
+        const msg = a.join(' ');
+        if (msg.includes('still waiting on run dependencies')) return;
+        console.error('[crossink]', ...a);
       },
-    ],
-  });
+      preRun: [
+        (mod) => {
+          mod.ENV.CROSSPOINT_SIM_SD = '/fs_';
+        },
+      ],
+    });
+  } catch (e) {
+    console.error(e);
+    setOverlay(`Wasm init failed: ${e.message || e}`);
+    setStatus('Wasm failed');
+    return;
+  }
 
   window.Module = Module;
 
@@ -291,9 +354,5 @@ installBtn.addEventListener('click', async () => {
   deferredPrompt = null;
   installBtn.hidden = true;
 });
-
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register(new URL('./sw.js', import.meta.url)).catch(console.error);
-}
 
 boot();
